@@ -1,0 +1,175 @@
+name: inferfund-validate
+
+on:
+  pull_request_target:
+    branches: [progress]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: inferfund-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  policy:
+    name: inferfund-policy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    outputs:
+      policy_ok: ${{ steps.validate.outputs.policy_ok }}
+      has_lean: ${{ steps.validate.outputs.has_lean }}
+      attempt_dir: ${{ steps.validate.outputs.attempt_dir }}
+      attempt_id: ${{ steps.validate.outputs.attempt_id }}
+      problem_key: ${{ steps.validate.outputs.problem_key }}
+      solves_target: ${{ steps.validate.outputs.solves_target }}
+    steps:
+      - name: Checkout trusted verifier (default branch)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "20"
+
+      - name: Install verifier dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Validate append-only policy
+        id: validate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO: ${{ github.repository }}
+        run: npx tsx verifier/ci-policy.ts
+
+  lean:
+    name: lean-execution
+    needs: policy
+    if: needs.policy.outputs.policy_ok == 'true' && needs.policy.outputs.has_lean == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted verifier (default branch)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          path: trusted
+
+      - name: Checkout untrusted contribution (exact PR head SHA, read-only data)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          path: contribution
+
+      - name: Setup elan and pinned Lean toolchain
+        run: |
+          curl -sSfL https://release.lean-lang.org/lean4/lean4-init.sh -o lean4-init.sh
+          bash lean4-init.sh -y
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          ~/.elan/bin/elan toolchain install \
+            "$(node -p "require('./trusted/verifier/config.json').leanToolchain")"
+          ~/.elan/bin/elan default \
+            "$(node -p "require('./trusted/verifier/config.json').leanToolchain")"
+
+      - name: Cache Formal Conjectures build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fc-workspace/.lake
+          key: fc-${{ hashFiles('trusted/verifier/config.json') }}
+          restore-keys: fc-
+
+      - name: Prepare pinned Formal Conjectures workspace (trusted, network)
+        run: |
+          set -euo pipefail
+          FC_REF=$(node -p "require('./trusted/verifier/config.json').formalConjecturesRef")
+          if [ ! -d fc-workspace ]; then
+            git clone --filter=blob:none \
+              https://github.com/$(node -p "require('./trusted/verifier/config.json').formalConjecturesRepo") \
+              fc-workspace
+          fi
+          cd fc-workspace
+          git fetch --depth 1 origin "$FC_REF"
+          git checkout --detach FETCH_HEAD
+          export PATH="$HOME/.elan/bin:$PATH"
+          lake exe cache get || true
+          lake build FormalConjecturesUtil || true
+
+      - name: Run Lean verification (untrusted content, no credentials)
+        env:
+          ATTEMPT_DIR: ${{ needs.policy.outputs.attempt_dir }}
+          ATTEMPT_ID: ${{ needs.policy.outputs.attempt_id }}
+          PROBLEM_KEY: ${{ needs.policy.outputs.problem_key }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SOLVES_TARGET: ${{ needs.policy.outputs.solves_target }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.elan/bin:$PATH"
+          mkdir -p out
+          cd trusted
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx tsx verifier/ci-lean.ts || true
+          test -f ../out/verification-result.json
+
+      - name: Upload verification result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verification-result
+          path: out/verification-result.json
+          if-no-files-found: error
+          retention-days: 5
+
+  report:
+    name: inferfund-verification
+    needs: [policy, lean]
+    if: always() && needs.policy.outputs.policy_ok == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Checkout trusted verifier (default branch)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "20"
+
+      - name: Install verifier dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Download verification artifact
+        if: needs.policy.outputs.has_lean == 'true'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: verification-result
+          path: result/
+
+      - name: Publish verification check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HAS_LEAN: ${{ needs.policy.outputs.has_lean }}
+          ATTEMPT_ID: ${{ needs.policy.outputs.attempt_id }}
+          SOLVES_TARGET: ${{ needs.policy.outputs.solves_target }}
+          REPO: ${{ github.repository }}
+        run: npx tsx verifier/ci-report.ts

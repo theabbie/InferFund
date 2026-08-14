@@ -1,0 +1,7 @@
+{
+  "upstreamRepo": "google-deepmind/formal-conjectures",
+  "upstreamUrl": "https://github.com/google-deepmind/formal-conjectures",
+  "ref": "main",
+  "pinnedCommit": "b33d8678a28118c95d8d4f60b11faaf39ccff1e6",
+  "leanVersion": "leanprover/lean4:v4.27.0"
+}

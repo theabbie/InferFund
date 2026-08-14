@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "leanToolchain": "leanprover/lean4:v4.27.0",
+  "formalConjecturesRepo": "google-deepmind/formal-conjectures",
+  "formalConjecturesRef": "b33d8678a28118c95d8d4f60b11faaf39ccff1e6",
+  "mathlibRef": "see lake-manifest.json of formal-conjectures at the pinned ref",
+  "allowedAxioms": [
+    "Classical.choice",
+    "Classical.em",
+    "Classical.propComplete",
+    "Classical.axiomOfChoice",
+    "Quot.sound",
+    "propext",
+    "Lean.ofReduceBool",
+    "Lean.trustCompiler"
+  ],
+  "maxLeanFiles": 10,
+  "maxLeanTotalBytes": 524288,
+  "timeoutMinutes": 25,
+  "requiredChecks": ["inferfund-policy", "inferfund-verification"]
+}
