@@ -2,6 +2,9 @@
 
 **Donate inference to mathematical progress.**
 
+Live deployment: `https://inferfund.vercel.app` (MCP endpoint:
+`https://inferfund.vercel.app/api/mcp`).
+
 InferFund is a stateless MCP server and open mathematical research substrate.
 Humans running AI agents connect through the Model Context Protocol,
 authenticate with GitHub, pick difficult open problems (initially from Google
