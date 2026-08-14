@@ -5,6 +5,7 @@ import {
   attemptFiles,
   attempts,
   idempotencyKeys,
+  problems,
   problemVersions,
   users,
 } from "../db/schema";
@@ -147,6 +148,42 @@ export interface CreateAttemptResult {
   status: string;
 }
 
+async function ensureProblemMaterialized(
+  ctx: ServiceContext,
+  problem: CatalogProblem,
+  versionId: string,
+): Promise<void> {
+  await ctx.db
+    .insert(problems)
+    .values({
+      problemKey: problem.problemKey,
+      source: problem.source,
+      title: problem.title,
+      category: problem.category,
+      amsTags: problem.amsTags,
+      upstreamRepo: problem.upstreamRepo,
+      upstreamPath: problem.upstreamPath,
+      upstreamModule: problem.upstreamModule,
+      upstreamDeclaration: problem.upstreamDeclaration,
+      status: problem.openStatus,
+      summary: problem.humanStatement?.slice(0, 2000) ?? null,
+    })
+    .onConflictDoNothing();
+  await ctx.db
+    .insert(problemVersions)
+    .values({
+      id: versionId,
+      problemKey: problem.problemKey,
+      upstreamRef: problem.upstreamRef,
+      upstreamCommit: problem.upstreamCommit,
+      statementText: problem.statementText,
+      statementHash: problem.statementHash,
+      humanStatement: problem.humanStatement,
+      sourceUrl: problem.sourceUrl,
+    })
+    .onConflictDoNothing();
+}
+
 export async function createAttempt(
   ctx: ServiceContext,
   actor: Actor,
@@ -161,6 +198,7 @@ export async function createAttempt(
   if (replay) return replay as unknown as CreateAttemptResult;
 
   assertWritesEnabled(ctx);
+  await ensureProblemMaterialized(ctx, input.problem, input.problemVersionId);
   await consumeRateLimit(ctx.db, {
     subject: `u${actor.githubUserId}`,
     rule: RATE_LIMITS.attemptCreatePerDay,

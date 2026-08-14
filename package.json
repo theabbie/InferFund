@@ -16,7 +16,8 @@
     "reconcile": "tsx scripts/reconcile.ts",
     "setup:github": "tsx scripts/setup-github.ts",
     "db:up": "docker compose up -d postgres",
-    "db:down": "docker compose down"
+    "db:down": "docker compose down",
+    "configure:rulesets": "tsx scripts/configure-rulesets.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
@@ -45,5 +46,6 @@
     "vitest": "^4.1.10"
   },
   "description": "Donate inference to mathematical progress. MCP server and open mathematical research substrate.",
-  "license": "SEE LICENSE IN LICENSE"
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module"
 }

@@ -15,10 +15,13 @@ export type AnyDatabase = PgDatabase<
   $client?: unknown;
 };
 
-let client: postgres.Sql | undefined;
-let db: Database | undefined;
+const globalRegistry = globalThis as unknown as {
+  __inferfundDb?: AnyDatabase;
+  __inferfundPgClient?: postgres.Sql;
+};
 
-export function getDb(): Database {
+export function getDb(): AnyDatabase {
+  const db = globalRegistry.__inferfundDb;
   if (db) return db;
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -26,14 +29,20 @@ export function getDb(): Database {
       "DATABASE_URL is not set. See .env.example for setup instructions.",
     );
   }
-  client = postgres(connectionString, {
+  const sqlClient = postgres(connectionString, {
     max: 1,
     prepare: false,
     idle_timeout: 20,
     connect_timeout: 10,
   });
-  db = drizzlePostgres(client, { schema });
-  return db;
+  const created = drizzlePostgres(sqlClient, { schema });
+  globalRegistry.__inferfundPgClient = sqlClient;
+  globalRegistry.__inferfundDb = created;
+  return created;
+}
+
+export function setDbForTests(testDb: AnyDatabase): void {
+  globalRegistry.__inferfundDb = testDb;
 }
 
 export async function createTestDatabase(): Promise<TestDatabase> {
@@ -43,10 +52,11 @@ export async function createTestDatabase(): Promise<TestDatabase> {
 }
 
 export async function closeDbForTests(): Promise<void> {
+  const client = globalRegistry.__inferfundPgClient;
   if (client) {
     await client.end({ timeout: 1 });
-    client = undefined;
-    db = undefined;
+    globalRegistry.__inferfundPgClient = undefined;
+    globalRegistry.__inferfundDb = undefined;
   }
 }
 

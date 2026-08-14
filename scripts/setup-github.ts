@@ -94,6 +94,14 @@ function main(): void {
       "-f",
       "encoding=utf-8",
     ]);
+    const blobKeep = ghJson<{ sha: string }>([
+      "api",
+      `repos/${owner}/${repo}/git/blobs`,
+      "-f",
+      "content=",
+      "-f",
+      "encoding=utf-8",
+    ]);
     const tree = JSON.parse(gh([
       "api",
       `repos/${owner}/${repo}/git/trees`,
@@ -117,15 +125,13 @@ function main(): void {
           path: "attempts/.gitkeep",
           mode: "100644",
           type: "blob",
-          sha: null,
-          content: "",
+          sha: blobKeep.sha,
         },
         {
           path: "attestations/.gitkeep",
           mode: "100644",
           type: "blob",
-          sha: null,
-          content: "",
+          sha: blobKeep.sha,
         },
       ],
     }))) as { sha: string };

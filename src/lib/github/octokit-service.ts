@@ -384,15 +384,17 @@ export class OctokitGitHubService implements GitHubService {
   }
 }
 
-let cachedService: GitHubService | undefined;
+const globalRegistry = globalThis as unknown as {
+  __inferfundGitHub?: GitHubService;
+};
 
 export function getGitHubService(): GitHubService {
-  if (!cachedService) {
-    cachedService = new OctokitGitHubService();
+  if (!globalRegistry.__inferfundGitHub) {
+    globalRegistry.__inferfundGitHub = new OctokitGitHubService();
   }
-  return cachedService;
+  return globalRegistry.__inferfundGitHub;
 }
 
 export function setGitHubServiceForTests(service: GitHubService): void {
-  cachedService = service;
+  globalRegistry.__inferfundGitHub = service;
 }

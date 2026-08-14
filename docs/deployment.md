@@ -1,0 +1,85 @@
+# Deployment
+
+Target platform: Vercel (production). Database: serverless Postgres
+(Neon via the Vercel Marketplace is the current recommended integration).
+
+## One-time external setup (owner actions)
+
+1. **GitHub OAuth App** (user identity):
+   https://github.com/settings/developers → New OAuth App
+   - Homepage: `https://<your-domain>`
+   - Authorization callback URL: `https://<your-domain>/auth/github/callback`
+   - → `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`
+2. **GitHub App** (service identity):
+   https://github.com/settings/apps → New GitHub App
+   - Permissions: Contents (RW), Pull requests (RW), Checks (RW),
+     Metadata (R). No organization permissions are required.
+   - Events: `pull_request` (required for merge bookkeeping).
+   - Webhook URL: `https://<your-domain>/api/github/webhook`
+     (set a secret → `GITHUB_APP_WEBHOOK_SECRET`).
+   - Install the App on the repository → `GITHUB_APP_ID`,
+     `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`
+     (on Vercel, paste the PEM with real newlines; the app normalizes `\n`).
+3. **Postgres**: create a Neon project (Vercel Marketplace or neon.tech) and
+   use the *pooled* connection string as `DATABASE_URL`.
+4. **Rulesets**: `GITHUB_REPO_OWNER=… GITHUB_REPO_NAME=… GITHUB_APP_ID=…
+   npm run configure:rulesets` (idempotent).
+5. **Admins**: `INFERFUND_ADMIN_GITHUB_IDS=<numeric id>,<…>`.
+
+## Vercel
+
+```bash
+vercel link                                # once, local project linkage
+# set every variable from .env.example (production scope):
+vercel env add INFERFUND_BASE_URL production          # https://<your-domain>
+vercel env add INFERFUND_MCP_RESOURCE_URL production  # https://<your-domain>/api/mcp
+vercel env add DATABASE_URL production
+vercel env add INFERFUND_SESSION_SECRET production
+vercel env add INFERFUND_TOKEN_SECRET production
+vercel env add GITHUB_OAUTH_CLIENT_ID production
+vercel env add GITHUB_OAUTH_CLIENT_SECRET production
+vercel env add GITHUB_REPO_OWNER production
+vercel env add GITHUB_REPO_NAME production
+vercel env add GITHUB_APP_ID production
+vercel env add GITHUB_APP_INSTALLATION_ID production
+vercel env add GITHUB_APP_PRIVATE_KEY production < key.pem
+vercel env add GITHUB_APP_WEBHOOK_SECRET production
+vercel env add INFERFUND_ADMIN_GITHUB_IDS production
+
+npm run db:migrate        # with production DATABASE_URL set locally
+npm run sync:problems     # refresh catalog if the pin changed
+vercel deploy --prod
+```
+
+Do **not** set `INFERFUND_ENABLE_WRITES` on the production project (writes are
+automatically enabled in production) and **never** set it on previews that
+hold production credentials.
+
+## Preview safety
+
+Non-production deployments refuse all GitHub mutations (`FORBIDDEN`) unless
+`INFERFUND_ENABLE_WRITES=true` is set explicitly. Only set that variable with
+a *sandbox* repository (`GITHUB_REPO_OWNER`/`GITHUB_REPO_NAME` pointing at a
+throwaway repo and a sandbox GitHub App).
+
+## Smoke test after deploy
+
+```bash
+curl -s https://<your-domain>/api/health | jq
+curl -s https://<your-domain>/.well-known/oauth-protected-resource | jq
+curl -s https://<your-domain>/.well-known/oauth-authorization-server | jq
+curl -s -X POST https://<your-domain>/api/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Then connect with a real MCP client, complete the GitHub authorization, and
+run the acceptance flow: search → get_problem → get_frontier → create →
+update → submit → CI checks → auto-merge → continue from another account.
+
+## Rollback
+
+`vercel rollback <url>` restores the previous deployment. Database migrations
+are forward-only; never run destructive resets in production
+(`drizzle-kit push`/`drop` are dev tools).

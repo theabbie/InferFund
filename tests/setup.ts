@@ -38,6 +38,17 @@ export async function makeHarness(): Promise<TestHarness> {
 export const ALICE = { githubUserId: 11111111, githubLogin: "alice" };
 export const BOB = { githubUserId: 22222222, githubLogin: "bob" };
 
+export async function seedUsers(
+  h: TestHarness,
+  actors: Array<{ githubUserId: number; githubLogin: string }> = [ALICE, BOB],
+): Promise<void> {
+  const { users } = await import("../src/lib/db/schema");
+  await h.db
+    .insert(users)
+    .values(actors)
+    .onConflictDoNothing();
+}
+
 export const TEST_TOKEN_SECRET = "test-token-secret-test-token-secret-1234";
 
 export const SAMPLE_PROBLEM = {
