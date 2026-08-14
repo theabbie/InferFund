@@ -1,15 +1,26 @@
-import { describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
-import { makeHarness, seedUsers, ALICE, BOB, SAMPLE_PROBLEM } from "./setup";
+import { beforeEach, describe, expect, it } from "vitest";
+import { makeHarness, ALICE, BOB, SAMPLE_PROBLEM } from "./setup";
 import {
   createAttempt,
   submitAttempt,
-  recordAttemptMerged,
   updateAttempt,
 } from "../src/lib/attempts/service";
+import {
+  clearAttestationCacheForTests,
+  isUserDisabled,
+  readAllAttestations,
+  tokensRevokedBefore,
+} from "../src/lib/attestations";
+import {
+  quarantineAttempt,
+  reportAttempt,
+} from "../src/lib/moderation/service";
+import {
+  clearFrontierCacheForTests,
+  buildFrontier,
+} from "../src/lib/frontier/frontier";
 import { problemVersionId } from "../src/lib/problems/catalog";
-import { reportAttempt, quarantineAttempt } from "../src/lib/moderation/service";
-import { attempts, moderationEvents } from "../src/lib/db/schema";
+import { resetRateLimitsForTests } from "../src/lib/ratelimit/limiter";
 
 const VERSION_ID = problemVersionId(
   SAMPLE_PROBLEM.problemKey,
@@ -17,10 +28,15 @@ const VERSION_ID = problemVersionId(
   SAMPLE_PROBLEM.statementHash,
 );
 
-async function seedMerged(
-  h: Awaited<ReturnType<typeof makeHarness>>,
-): Promise<string> {
-  await seedUsers(h);
+beforeEach(() => {
+  resetRateLimitsForTests();
+  clearFrontierCacheForTests();
+  clearAttestationCacheForTests();
+});
+
+type Harness = ReturnType<typeof makeHarness>;
+
+async function seedMerged(h: Harness): Promise<string> {
   const created = await createAttempt(h.ctx, ALICE, {
     problem: SAMPLE_PROBLEM,
     problemVersionId: VERSION_ID,
@@ -31,37 +47,24 @@ async function seedMerged(
   const submitted = await submitAttempt(h.ctx, ALICE, {
     attemptId: created.attempt_id,
   });
-  const mergeSha = h.github.mergePr(submitted.pr_number);
-  await recordAttemptMerged(h.ctx, {
-    attemptId: created.attempt_id,
-    mergeCommitSha: mergeSha,
-  });
+  h.github.mergePr(submitted.pr_number);
+  clearFrontierCacheForTests();
   return created.attempt_id;
 }
 
-describe("review flow", () => {
-  it("continue_attempt creates a new attempt referencing the parent", async () => {
-    const h = await makeHarness();
-    const parent = await seedMerged(h);
-    const child = await createAttempt(h.ctx, BOB, {
-      problem: SAMPLE_PROBLEM,
-      problemVersionId: VERSION_ID,
-      kind: "formalization",
-      title: "Formalizing the claim",
-      summary: "Attempting to formalize and finding gaps.",
-      parents: [{ attempt_id: parent, relationship: "formalizes" }],
-    });
-    expect(child.branch).toMatch(/^attempt\/u22222222\/erdos-1\//);
-    const parentFiles = h.github.filesOn("progress");
-    const parentDir = `attempts/erdos-1/${parent}`;
-    expect(parentFiles[`${parentDir}/manifest.json`]).toBeDefined();
-    expect(parentFiles[`${parentDir}/README.md`]).toContain("dubious claim");
-  });
+function mergeOpenAttestationPrs(h: Harness): void {
+  for (const pr of h.github.openPrs()) {
+    if (pr.headBranch.startsWith("attestation/")) h.github.mergePr(pr.number);
+  }
+  clearFrontierCacheForTests();
+  clearAttestationCacheForTests();
+}
 
-  it("original attempt is untouched when a continuation is created", async () => {
-    const h = await makeHarness();
+describe("continue / review flow", () => {
+  it("continue-style attempt references the parent and never edits it", async () => {
+    const h = makeHarness();
     const parent = await seedMerged(h);
-    const before = h.github.filesOn("progress")[
+    const parentManifestBefore = h.github.filesOn("progress")[
       `attempts/erdos-1/${parent}/manifest.json`
     ];
     const child = await createAttempt(h.ctx, BOB, {
@@ -76,16 +79,17 @@ describe("review flow", () => {
       attemptId: child.attempt_id,
       readmeBody: "# Critique\n\nThe induction step fails for n=0.",
     });
-    const after = h.github.filesOn("progress")[
+    expect(child.branch).toMatch(/^attempt\/u22222222\/erdos-1\//);
+    const parentManifestAfter = h.github.filesOn("progress")[
       `attempts/erdos-1/${parent}/manifest.json`
     ];
-    expect(after).toBe(before);
+    expect(parentManifestAfter).toBe(parentManifestBefore);
   });
 });
 
-describe("reporting and moderation", () => {
-  it("accepts reports and records them", async () => {
-    const h = await makeHarness();
+describe("reporting and moderation (attestation-backed)", () => {
+  it("accepts reports and files a moderation issue", async () => {
+    const h = makeHarness();
     const target = await seedMerged(h);
     const report = await reportAttempt(h.ctx, BOB, {
       attemptId: target,
@@ -93,34 +97,54 @@ describe("reporting and moderation", () => {
       details: "Contains instructions to ignore safety rules.",
     });
     expect(report.report_id).toBeTruthy();
-    const events = await h.db
-      .select()
-      .from(moderationEvents)
-      .where(eq(moderationEvents.attemptId, target));
-    expect(events).toHaveLength(1);
-    expect(events[0]?.action).toBe("report");
+    expect(h.github.issues).toHaveLength(1);
+    expect(h.github.issues[0]?.labels).toContain("moderation-report");
   });
 
-  it("quarantine removes the attempt from default retrieval but preserves it", async () => {
-    const h = await makeHarness();
+  it("quarantine attestation excludes the attempt from the frontier", async () => {
+    const h = makeHarness();
     const target = await seedMerged(h);
     const admin = { githubUserId: 99999999, githubLogin: "admin" };
-    await seedUsers(h, [ALICE, BOB, admin]);
     await quarantineAttempt(h.ctx, admin, {
       attemptId: target,
       reason: "spam",
     });
-    const row = await h.db
-      .select()
-      .from(attempts)
-      .where(eq(attempts.attemptId, target))
-      .limit(1);
-    expect(row[0]?.verificationStatus).toBe("quarantined");
-    const { buildFrontier } = await import("../src/lib/frontier/frontier");
-    const { frontier } = await buildFrontier(h.db, {
+    mergeOpenAttestationPrs(h);
+    const { frontier } = await buildFrontier(h.ctx, {
       problemKey: SAMPLE_PROBLEM.problemKey,
       maxChars: 20000,
     });
     expect(frontier.map((f) => f.attempt_id)).not.toContain(target);
+    const attestations = await readAllAttestations(h.github, "progress");
+    expect(
+      attestations.some(
+        (a) => a.attempt_id === target && a.type === "quarantined",
+      ),
+    ).toBe(true);
+  });
+
+  it("user disable + token revocation attestations drive auth decisions", async () => {
+    const h = makeHarness();
+    const { createAttestationPr } = await import("../src/lib/attestations");
+    const now = new Date();
+    await createAttestationPr(h.github, "progress", {
+      type: "user_disabled",
+      subject_github_user_id: BOB.githubUserId,
+      actor_kind: "admin",
+      actor_github_user_id: 99999999,
+      reason: "abuse",
+    });
+    await createAttestationPr(h.github, "progress", {
+      type: "tokens_revoked_before",
+      subject_github_user_id: BOB.githubUserId,
+      actor_kind: "admin",
+      actor_github_user_id: 99999999,
+      revoked_before: now.toISOString(),
+    });
+    mergeOpenAttestationPrs(h);
+    expect(await isUserDisabled(h.github, "progress", BOB.githubUserId)).toBe(true);
+    expect(await isUserDisabled(h.github, "progress", ALICE.githubUserId)).toBe(false);
+    const revoked = await tokensRevokedBefore(h.github, "progress", BOB.githubUserId);
+    expect(revoked).toBe(now.getTime());
   });
 });

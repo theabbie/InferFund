@@ -1,4 +1,3 @@
-import { getDb } from "@/lib/db/client";
 import { getConfig } from "@/lib/config";
 import {
   issueTokens,
@@ -39,7 +38,6 @@ function tokenResponse(input: {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  const db = getDb();
   const config = getConfig();
   let params: URLSearchParams;
   try {
@@ -74,22 +72,25 @@ export async function POST(req: Request): Promise<Response> {
         "code, redirect_uri and code_verifier are required.",
       );
     }
-    const redeemed = await redeemAuthorizationCode(
-      db,
-      config.INFERFUND_TOKEN_SECRET,
-      { code, clientId, redirectUri, codeVerifier, resource },
-    );
+    const redeemed = redeemAuthorizationCode(config.INFERFUND_TOKEN_SECRET, {
+      code,
+      clientId,
+      redirectUri,
+      codeVerifier,
+      resource,
+    });
     if (!redeemed.ok) {
       return oauthError(
         400,
         redeemed.error,
-        "The authorization code is invalid, expired, already used, or " +
-          "failed PKCE verification.",
+        "The authorization code is invalid, expired, or failed PKCE " +
+          "verification.",
       );
     }
-    const tokens = await issueTokens(db, config.INFERFUND_TOKEN_SECRET, {
+    const tokens = issueTokens(config.INFERFUND_TOKEN_SECRET, {
       clientId,
       githubUserId: redeemed.githubUserId,
+      githubLogin: redeemed.githubLogin,
       scopes: redeemed.scopes,
       resource,
     });
@@ -106,7 +107,7 @@ export async function POST(req: Request): Promise<Response> {
     if (!refreshToken) {
       return oauthError(400, "invalid_request", "refresh_token is required.");
     }
-    const rotated = await rotateRefreshToken(db, config.INFERFUND_TOKEN_SECRET, {
+    const rotated = rotateRefreshToken(config.INFERFUND_TOKEN_SECRET, {
       refreshToken,
       clientId,
       resource,
@@ -115,14 +116,14 @@ export async function POST(req: Request): Promise<Response> {
       return oauthError(
         400,
         rotated.error,
-        "The refresh token is invalid, expired, or was already rotated.",
+        "The refresh token is invalid or expired.",
       );
     }
     return tokenResponse({
       accessToken: rotated.tokens.accessToken,
       expiresAt: rotated.tokens.accessTokenExpiresAt,
       refreshToken: rotated.tokens.refreshToken,
-      scopes: [],
+      scopes: rotated.tokens.scopes,
     });
   }
 

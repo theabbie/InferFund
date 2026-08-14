@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { InferFundError } from "../errors";
 import type {
+  CheckRunSummary,
   CollaboratorStatus,
   GitHubFileInput,
   GitHubRefInfo,
   GitHubService,
   PullRequestInfo,
   RepoFileContent,
+  TreeEntry,
 } from "./service";
 
 interface FakeCommit {
@@ -15,13 +17,19 @@ interface FakeCommit {
   parents: string[];
 }
 
+interface FakePr extends PullRequestInfo {
+  autoMerge: boolean;
+}
+
 export class FakeGitHubService implements GitHubService {
   private branches = new Map<string, string>();
   private commits = new Map<string, FakeCommit>();
-  private prs = new Map<number, PullRequestInfo & { autoMerge: boolean }>();
+  private prs = new Map<number, FakePr>();
   private nextPrNumber = 1;
   private collaborators = new Map<string, CollaboratorStatus>();
   private counter = 0;
+  issues: Array<{ title: string; body: string; labels: string[] }> = [];
+  checkRuns = new Map<string, CheckRunSummary[]>();
   failNextOperation: string | null = null;
 
   private nextSha(): string {
@@ -81,6 +89,10 @@ export class FakeGitHubService implements GitHubService {
     return { ref: branch, sha: fromSha };
   }
 
+  async deleteBranch(branch: string): Promise<void> {
+    this.branches.delete(branch);
+  }
+
   async readFile(
     branch: string,
     path: string,
@@ -91,6 +103,20 @@ export class FakeGitHubService implements GitHubService {
     const content = commit?.files.get(path);
     if (content === undefined) return null;
     return { path, content, sha };
+  }
+
+  async readFilesAtRef(
+    ref: string,
+    paths: string[],
+  ): Promise<Map<string, string>> {
+    const sha = this.branches.get(ref) ?? ref;
+    const commit = this.commits.get(sha);
+    const result = new Map<string, string>();
+    for (const path of paths) {
+      const content = commit?.files.get(path);
+      if (content !== undefined) result.set(path, content);
+    }
+    return result;
   }
 
   async upsertFiles(
@@ -128,7 +154,7 @@ export class FakeGitHubService implements GitHubService {
       );
     }
     for (const pr of this.prs.values()) {
-      if (pr.state === "open" && pr.headSha === this.branches.get(input.head)) {
+      if (pr.state === "open" && pr.headBranch === input.head) {
         throw new InferFundError(
           "BRANCH_CONFLICT",
           `An open PR already exists for branch "${input.head}".`,
@@ -136,13 +162,16 @@ export class FakeGitHubService implements GitHubService {
       }
     }
     const number = this.nextPrNumber++;
-    const pr = {
+    const pr: FakePr = {
       number,
       url: `https://github.com/fake/repo/pull/${number}`,
-      state: "open" as const,
+      state: "open",
       merged: false,
       headSha: this.branches.get(input.head) ?? "",
+      headBranch: input.head,
       baseBranch: input.base,
+      createdAt: new Date().toISOString(),
+      mergedAt: null,
       autoMerge: false,
     };
     this.prs.set(number, pr);
@@ -153,6 +182,20 @@ export class FakeGitHubService implements GitHubService {
     return this.prs.get(prNumber) ?? null;
   }
 
+  async listOpenPullRequests(): Promise<PullRequestInfo[]> {
+    return [...this.prs.values()].filter((p) => p.state === "open");
+  }
+
+  async findMergedPullRequestForBranch(
+    branch: string,
+  ): Promise<PullRequestInfo | null> {
+    return (
+      [...this.prs.values()].find(
+        (p) => p.headBranch === branch && p.merged,
+      ) ?? null
+    );
+  }
+
   async enableAutoMerge(prNumber: number): Promise<void> {
     const pr = this.prs.get(prNumber);
     if (pr) pr.autoMerge = true;
@@ -161,6 +204,33 @@ export class FakeGitHubService implements GitHubService {
   async closePullRequest(prNumber: number): Promise<void> {
     const pr = this.prs.get(prNumber);
     if (pr) pr.state = "closed";
+  }
+
+  async getTreeRecursive(
+    branch: string,
+  ): Promise<{ sha: string; tree: TreeEntry[] }> {
+    const sha = this.branches.get(branch);
+    if (!sha) {
+      throw new InferFundError(
+        "GITHUB_UNAVAILABLE",
+        `Branch "${branch}" does not exist.`,
+      );
+    }
+    const commit = this.commits.get(sha);
+    const tree: TreeEntry[] = [...(commit?.files.keys() ?? [])].map((p) => ({
+      path: p,
+      sha: createHash("sha1").update(p).digest("hex"),
+      size: commit?.files.get(p)?.length,
+    }));
+    return { sha, tree };
+  }
+
+  async getCheckRunsForRef(sha: string): Promise<CheckRunSummary[]> {
+    return this.checkRuns.get(sha) ?? [];
+  }
+
+  setCheckRuns(sha: string, runs: CheckRunSummary[]): void {
+    this.checkRuns.set(sha, runs);
   }
 
   async ensureCollaborator(githubLogin: string): Promise<CollaboratorStatus> {
@@ -181,8 +251,29 @@ export class FakeGitHubService implements GitHubService {
     return this.collaborators.get(githubLogin) ?? { status: "none" };
   }
 
-  async listAttemptBranches(): Promise<string[]> {
-    return [...this.branches.keys()].filter((b) => b.startsWith("attempt/"));
+  async listAttemptBranches(prefix: string): Promise<string[]> {
+    return [...this.branches.keys()].filter((b) => b.startsWith(prefix));
+  }
+
+  async searchPullRequestsCreatedSince(
+    branchPrefix: string,
+    sinceIsoDate: string,
+  ): Promise<number> {
+    const since = new Date(sinceIsoDate).getTime();
+    return [...this.prs.values()].filter(
+      (p) =>
+        p.headBranch.startsWith(branchPrefix) &&
+        new Date(p.createdAt).getTime() >= since,
+    ).length;
+  }
+
+  async createIssue(
+    title: string,
+    body: string,
+    labels: string[],
+  ): Promise<string | null> {
+    this.issues.push({ title, body, labels });
+    return `https://github.com/fake/repo/issues/${this.issues.length}`;
   }
 
   filesOn(branch: string): Record<string, string> {
@@ -194,16 +285,23 @@ export class FakeGitHubService implements GitHubService {
   mergePr(prNumber: number): string {
     const pr = this.prs.get(prNumber);
     if (!pr) throw new Error(`No PR ${prNumber}`);
-    const headBranch = [...this.branches.entries()].find(
-      ([, sha]) => sha === pr.headSha,
-    )?.[0];
-    if (headBranch) {
-      const headFiles = this.filesOn(headBranch);
-      const baseFiles = this.filesOn(pr.baseBranch);
-      this.seedBranch(pr.baseBranch, { ...baseFiles, ...headFiles });
-    }
+    const headFiles = this.filesOn(pr.headBranch);
+    const baseFiles = this.filesOn(pr.baseBranch);
+    const merged = { ...baseFiles, ...headFiles };
+    const sha = this.nextSha();
+    this.commits.set(sha, {
+      sha,
+      files: new Map(Object.entries(merged)),
+      parents: [this.branches.get(pr.baseBranch) ?? ""],
+    });
+    this.branches.set(pr.baseBranch, sha);
     pr.merged = true;
     pr.state = "closed";
-    return this.branches.get(pr.baseBranch) ?? "";
+    pr.mergedAt = new Date().toISOString();
+    return sha;
+  }
+
+  openPrs(): FakePr[] {
+    return [...this.prs.values()].filter((p) => p.state === "open");
   }
 }

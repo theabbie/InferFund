@@ -5,7 +5,6 @@ const urlSchema = z.string().url();
 const envSchema = z.object({
   INFERFUND_BASE_URL: urlSchema,
   INFERFUND_MCP_RESOURCE_URL: urlSchema,
-  DATABASE_URL: z.string().min(1),
   INFERFUND_SESSION_SECRET: z.string().min(32),
   INFERFUND_TOKEN_SECRET: z.string().min(32),
   GITHUB_OAUTH_CLIENT_ID: z.string().min(1).optional(),

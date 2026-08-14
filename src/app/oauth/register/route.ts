@@ -1,4 +1,3 @@
-import { getDb } from "@/lib/db/client";
 import { registerClient } from "@/lib/auth/clients";
 import { jsonResponse, oauthError } from "@/lib/auth/authenticate";
 
@@ -18,7 +17,7 @@ export async function POST(req: Request): Promise<Response> {
   } catch {
     return oauthError(400, "invalid_client_metadata", "Body must be JSON.");
   }
-  const result = await registerClient(getDb(), body);
+  const result = await registerClient(body);
   if (!result.ok) {
     const response = oauthError(400, result.error, result.description);
     for (const [k, v] of Object.entries(CORS)) response.headers.set(k, v);

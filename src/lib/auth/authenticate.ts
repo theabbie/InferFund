@@ -1,9 +1,8 @@
 import { getConfig } from "../config";
-import { getDb } from "../db/client";
 import { getGitHubService } from "../github/octokit-service";
 import { validateAccessToken } from "./tokens";
-import { getActorFromToken, type Actor } from "../attempts/service";
-import { InferFundError } from "../errors";
+import { isUserDisabled, tokensRevokedBefore } from "../attestations";
+import type { Actor } from "../attempts/service";
 
 export interface AuthenticatedRequest {
   actor: Actor;
@@ -19,38 +18,44 @@ export async function authenticateBearer(
   const token = header.slice(7).trim();
   if (!token) return null;
   const config = getConfig();
-  const db = getDb();
-  const validated = await validateAccessToken(
-    db,
+  const validated = validateAccessToken(
     config.INFERFUND_TOKEN_SECRET,
     token,
+    config.INFERFUND_MCP_RESOURCE_URL,
   );
   if (!validated) return null;
-  if (validated.resource !== config.INFERFUND_MCP_RESOURCE_URL) return null;
-  const serviceCtx = {
-    db,
-    github: getGitHubService(),
-    progressBranch: config.INFERFUND_PROGRESS_BRANCH,
-    attemptBranchPrefix: config.INFERFUND_ATTEMPT_BRANCH_PREFIX,
-    maxOpenAttempts: config.INFERFUND_MAX_OPEN_ATTEMPTS,
-    maxAttemptsPerDay: config.INFERFUND_MAX_ATTEMPTS_PER_DAY,
-    maxSubmissionsPerDay: config.INFERFUND_MAX_SUBMISSIONS_PER_DAY,
-    maxLeanSubmissionsPerDay: config.INFERFUND_MAX_LEAN_SUBMISSIONS_PER_DAY,
-    maxAttemptBytes: config.INFERFUND_MAX_ATTEMPT_BYTES,
-    maxFilesPerAttempt: config.INFERFUND_MAX_FILES_PER_ATTEMPT,
-    writesEnabled: config.writesEnabled,
-  };
   try {
-    const actor = await getActorFromToken(serviceCtx, validated.githubUserId);
-    return {
-      actor,
-      scopes: validated.scopes,
-      clientId: validated.clientId,
-    };
-  } catch (error) {
-    if (error instanceof InferFundError) return null;
-    throw error;
+    const github = getGitHubService();
+    const [disabled, revokedBefore] = await Promise.all([
+      isUserDisabled(
+        github,
+        config.INFERFUND_PROGRESS_BRANCH,
+        validated.githubUserId,
+      ),
+      tokensRevokedBefore(
+        github,
+        config.INFERFUND_PROGRESS_BRANCH,
+        validated.githubUserId,
+      ),
+    ]);
+    if (disabled) return null;
+    if (
+      revokedBefore !== null &&
+      validated.issuedAt.getTime() < revokedBefore
+    ) {
+      return null;
+    }
+  } catch {
+    void 0;
   }
+  return {
+    actor: {
+      githubUserId: validated.githubUserId,
+      githubLogin: validated.githubLogin,
+    },
+    scopes: validated.scopes,
+    clientId: validated.clientId,
+  };
 }
 
 export function jsonResponse(

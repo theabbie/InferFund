@@ -1,7 +1,7 @@
 # Deployment
 
-Target platform: Vercel (production). Database: serverless Postgres
-(Neon via the Vercel Marketplace is the current recommended integration).
+Target platform: Vercel (production). There is no database to provision —
+the system is stateless (Git + GitHub metadata + signed tokens).
 
 ## One-time external setup (owner actions)
 
@@ -20,11 +20,9 @@ Target platform: Vercel (production). Database: serverless Postgres
    - Install the App on the repository → `GITHUB_APP_ID`,
      `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`
      (on Vercel, paste the PEM with real newlines; the app normalizes `\n`).
-3. **Postgres**: create a Neon project (Vercel Marketplace or neon.tech) and
-   use the *pooled* connection string as `DATABASE_URL`.
-4. **Rulesets**: `GITHUB_REPO_OWNER=… GITHUB_REPO_NAME=… GITHUB_APP_ID=…
+3. **Rulesets**: `GITHUB_REPO_OWNER=… GITHUB_REPO_NAME=… GITHUB_APP_ID=…
    npm run configure:rulesets` (idempotent).
-5. **Admins**: `INFERFUND_ADMIN_GITHUB_IDS=<numeric id>,<…>`.
+4. **Admins**: `INFERFUND_ADMIN_GITHUB_IDS=<numeric id>,<…>`.
 
 ## Vercel
 
@@ -33,7 +31,6 @@ vercel link                                # once, local project linkage
 # set every variable from .env.example (production scope):
 vercel env add INFERFUND_BASE_URL production          # https://<your-domain>
 vercel env add INFERFUND_MCP_RESOURCE_URL production  # https://<your-domain>/api/mcp
-vercel env add DATABASE_URL production
 vercel env add INFERFUND_SESSION_SECRET production
 vercel env add INFERFUND_TOKEN_SECRET production
 vercel env add GITHUB_OAUTH_CLIENT_ID production
@@ -46,7 +43,6 @@ vercel env add GITHUB_APP_PRIVATE_KEY production < key.pem
 vercel env add GITHUB_APP_WEBHOOK_SECRET production
 vercel env add INFERFUND_ADMIN_GITHUB_IDS production
 
-npm run db:migrate        # with production DATABASE_URL set locally
 npm run sync:problems     # refresh catalog if the pin changed
 vercel deploy --prod
 ```
@@ -80,6 +76,6 @@ update → submit → CI checks → auto-merge → continue from another account
 
 ## Rollback
 
-`vercel rollback <url>` restores the previous deployment. Database migrations
-are forward-only; never run destructive resets in production
-(`drizzle-kit push`/`drop` are dev tools).
+`vercel rollback <url>` restores the previous deployment. There is no
+database state to roll back; the canonical record is the `progress` branch,
+which no deployment can rewrite.

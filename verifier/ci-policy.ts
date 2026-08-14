@@ -1,6 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
-import { validatePullRequestPolicy, type DiffFile } from "./policy";
+import {
+  validateAttestationPullRequest,
+  validatePullRequestPolicy,
+  type DiffFile,
+} from "./policy";
 
 interface CatalogEntry {
   problemKey: string;
@@ -75,6 +79,44 @@ async function main(): Promise<void> {
   const expectedProblemKey = branchMatch?.[2] ?? "";
   const expectedAttemptId = branchMatch?.[3] ?? "";
   const expectedAuthorId = Number(branchMatch?.[1] ?? "0");
+  const isAttestation = headBranch.startsWith("attestation/");
+
+  if (isAttestation) {
+    const attResult = validateAttestationPullRequest({
+      prBaseBranch: baseBranch,
+      headBranch,
+      files,
+    });
+    setOutput("policy_ok", String(attResult.ok));
+    setOutput("has_lean", "false");
+    setOutput("attempt_dir", "");
+    setOutput("attempt_id", expectedAttemptId);
+    setOutput("problem_key", expectedProblemKey);
+    setOutput("solves_target", "false");
+    const conclusion = attResult.ok ? "success" : "failure";
+    const summary = attResult.ok
+      ? "Attestation PR policy validation passed."
+      : `Policy violations:\n${attResult.violations.map((v) => `- ${v}`).join("\n")}`;
+    gh([
+      "api",
+      `repos/${repo}/check-runs`,
+      "-f",
+      "name=inferfund-policy",
+      "-f",
+      `head_sha=${headSha}`,
+      "-f",
+      "status=completed",
+      "-f",
+      `conclusion=${conclusion}`,
+      "-f",
+      `output[title]=InferFund policy: ${conclusion}`,
+      "-f",
+      `output[summary]=${summary.slice(0, 60000)}`,
+    ]);
+    console.log(attResult.ok ? "POLICY OK (attestation)" : "POLICY FAILED");
+    if (!attResult.ok) process.exit(1);
+    return;
+  }
 
   const catalog = JSON.parse(
     readFileSync("data/problems.json", "utf8"),

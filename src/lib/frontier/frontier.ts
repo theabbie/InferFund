@@ -1,6 +1,9 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import type { AnyDatabase } from "../db/client";
-import { attemptEdges, attempts } from "../db/schema";
+import type { AnyContext, AttemptRecord } from "../attempts/service";
+import {
+  deriveVerificationView,
+  readAllAttestations,
+} from "../attestations";
+import { parseManifest } from "../attempts/manifest";
 
 export interface FrontierEntry {
   attempt_id: string;
@@ -23,12 +26,11 @@ export interface FrontierEntry {
   referenced_by_count: number;
 }
 
-function bucketFor(attempt: {
+function bucketFor(input: {
   verificationStatus: string;
   kind: string;
-  solvesTarget: boolean;
 }): FrontierEntry["bucket"] {
-  switch (attempt.verificationStatus) {
+  switch (input.verificationStatus) {
     case "lean_verified":
       return "VERIFIED";
     case "reproduced":
@@ -40,10 +42,10 @@ function bucketFor(attempt: {
     default:
       break;
   }
-  if (attempt.kind === "refutation" || attempt.kind === "counterexample") {
+  if (input.kind === "refutation" || input.kind === "counterexample") {
     return "BLOCKED";
   }
-  if (attempt.kind === "lemma" || attempt.kind === "reduction") {
+  if (input.kind === "lemma" || input.kind === "reduction") {
     return "OPEN_SUBGOAL";
   }
   return "UNVERIFIED";
@@ -68,51 +70,133 @@ function bucketRank(bucket: FrontierEntry["bucket"]): number {
   }
 }
 
+export interface MergedAttemptIndex {
+  attempts: AttemptRecord[];
+  edges: Array<{ child: string; parent: string; relationship: string }>;
+  treeSha: string;
+}
+
+const indexCache = new Map<
+  string,
+  { treeSha: string; value: MergedAttemptIndex; fetchedAt: number }
+>();
+const INDEX_CACHE_TTL_MS = 60 * 1000;
+
+export async function buildMergedAttemptIndex(
+  ctx: AnyContext,
+  problemKey: string,
+): Promise<MergedAttemptIndex> {
+  const { sha, tree } = await ctx.github.getTreeRecursive(ctx.progressBranch);
+  const cached = indexCache.get(problemKey);
+  if (
+    cached &&
+    cached.treeSha === sha &&
+    Date.now() - cached.fetchedAt < INDEX_CACHE_TTL_MS
+  ) {
+    return cached.value;
+  }
+  const prefix = `attempts/${problemKey}/`;
+  const manifestPaths = tree
+    .map((t) => t.path)
+    .filter(
+      (p) => p.startsWith(prefix) && p.endsWith("/manifest.json"),
+    );
+  const files = await ctx.github.readFilesAtRef(sha, manifestPaths);
+  const attempts: AttemptRecord[] = [];
+  const edges: MergedAttemptIndex["edges"] = [];
+  for (const [path, content] of files) {
+    const attemptId = path.split("/")[2] ?? "";
+    try {
+      const manifest = parseManifest(JSON.parse(content));
+      attempts.push({
+        attemptId: manifest.attempt_id,
+        problemKey,
+        ownerGithubUserId: manifest.author.github_user_id,
+        ownerGithubLogin: manifest.author.github_login,
+        kind: manifest.kind,
+        title: manifest.title,
+        summary: manifest.summary,
+        branchName: null,
+        baseProgressSha: manifest.base_progress_sha,
+        status: "merged",
+        hasLean: manifest.declared_lean_theorems.length > 0,
+        solvesTarget: manifest.solves_target,
+        parents: manifest.parents,
+        createdAt: manifest.created_at,
+        prNumber: null,
+        prUrl: null,
+        mergedAt: null,
+        manifest,
+      });
+      for (const parent of manifest.parents) {
+        edges.push({
+          child: manifest.attempt_id,
+          parent: parent.attempt_id,
+          relationship: parent.relationship,
+        });
+      }
+    } catch {
+      continue;
+    }
+    void attemptId;
+  }
+  const value = { attempts, edges, treeSha: sha };
+  indexCache.set(problemKey, {
+    treeSha: sha,
+    value,
+    fetchedAt: Date.now(),
+  });
+  return value;
+}
+
+export function clearFrontierCacheForTests(): void {
+  indexCache.clear();
+}
+
 export async function buildFrontier(
-  db: AnyDatabase,
+  ctx: AnyContext,
   input: { problemKey: string; maxChars: number },
 ): Promise<{ frontier: FrontierEntry[]; truncated: boolean }> {
-  const rows = await db
-    .select()
-    .from(attempts)
-    .where(
-      and(
-        eq(attempts.problemKey, input.problemKey),
-        eq(attempts.status, "merged"),
-      ),
-    )
-    .orderBy(desc(attempts.mergedAt))
-    .limit(500);
-  const visible = rows.filter(
-    (a) => a.verificationStatus !== "quarantined",
+  const index = await buildMergedAttemptIndex(ctx, input.problemKey);
+  const attestations = await readAllAttestations(
+    ctx.github,
+    ctx.progressBranch,
   );
-  const ids = visible.map((a) => a.attemptId);
+
   const refCounts = new Map<string, number>();
-  if (ids.length > 0) {
-    const refs = await db
-      .select({
-        parentAttemptId: attemptEdges.parentAttemptId,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(attemptEdges)
-      .where(inArray(attemptEdges.parentAttemptId, ids))
-      .groupBy(attemptEdges.parentAttemptId);
-    for (const r of refs) refCounts.set(r.parentAttemptId, r.count);
+  for (const edge of index.edges) {
+    refCounts.set(edge.parent, (refCounts.get(edge.parent) ?? 0) + 1);
   }
 
-  const entries: FrontierEntry[] = visible.map((a) => ({
-    attempt_id: a.attemptId,
-    kind: a.kind,
-    title: a.title,
-    summary: a.summary,
-    author_github_login: a.ownerGithubLogin,
-    created_at: a.createdAt.toISOString(),
-    verification_status: a.verificationStatus,
-    relevance_status: a.relevanceStatus,
-    solves_target: a.solvesTarget && a.verificationStatus === "lean_verified",
-    bucket: bucketFor(a),
-    referenced_by_count: refCounts.get(a.attemptId) ?? 0,
-  }));
+  const entries: FrontierEntry[] = [];
+  for (const attempt of index.attempts) {
+    const view = deriveVerificationView(
+      attempt.attemptId,
+      attestations,
+      index.edges,
+    );
+    if (view.quarantined) continue;
+    entries.push({
+      attempt_id: attempt.attemptId,
+      kind: attempt.kind,
+      title: attempt.title,
+      summary: attempt.summary,
+      author_github_login: attempt.ownerGithubLogin,
+      created_at: attempt.createdAt,
+      verification_status: view.verificationStatus,
+      relevance_status:
+        attempt.solvesTarget && view.verificationStatus === "lean_verified"
+          ? "solves_target"
+          : "unreviewed",
+      solves_target:
+        attempt.solvesTarget && view.verificationStatus === "lean_verified",
+      bucket: bucketFor({
+        verificationStatus: view.verificationStatus,
+        kind: attempt.kind,
+      }),
+      referenced_by_count: refCounts.get(attempt.attemptId) ?? 0,
+    });
+  }
 
   entries.sort((a, b) => {
     const rankDiff = bucketRank(a.bucket) - bucketRank(b.bucket);

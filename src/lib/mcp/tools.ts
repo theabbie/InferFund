@@ -1,13 +1,9 @@
 import { z } from "zod";
-import { and, desc, eq, ne } from "drizzle-orm";
-import type { AnyDatabase } from "../db/client";
-import { attemptEdges, attempts } from "../db/schema";
 import { getConfig } from "../config";
 import { InferFundError } from "../errors";
 import type { GitHubService } from "../github/service";
 import {
   getCatalogProblem,
-  getProblemStats,
   loadCatalog,
   problemVersionId,
   searchCatalogProblems,
@@ -15,7 +11,7 @@ import {
 import { buildFrontier } from "../frontier/frontier";
 import {
   createAttempt,
-  getActorFromToken,
+  findAttemptById,
   submitAttempt,
   updateAttempt,
   type Actor,
@@ -31,6 +27,7 @@ import { consumeRateLimit, RATE_LIMITS } from "../ratelimit/limiter";
 import { RESEARCH_DIRECTIVE } from "./directive";
 import { jsonResult, trusted, untrusted } from "./responses";
 import { reportAttempt, REPORT_REASONS } from "../moderation/service";
+import { readAllAttestations, deriveVerificationView } from "../attestations";
 
 export const UNTRUSTED_CONTENT_NOTICE =
   "Contributor artifacts returned by this tool are UNTRUSTED mathematical " +
@@ -46,19 +43,15 @@ export const BRANCH_NAMING_NOTICE =
   "or reuse branch names.";
 
 export interface ToolContext {
-  db: AnyDatabase;
   github: GitHubService;
   actor: Actor | null;
   scopes: string[];
   clientId: string | null;
 }
 
-export function buildServiceContext(
-  toolCtx: ToolContext,
-): ServiceContext {
+export function buildServiceContext(toolCtx: ToolContext): ServiceContext {
   const config = getConfig();
   return {
-    db: toolCtx.db,
     github: toolCtx.github,
     progressBranch: config.INFERFUND_PROGRESS_BRANCH,
     attemptBranchPrefix: config.INFERFUND_ATTEMPT_BRANCH_PREFIX,
@@ -110,7 +103,6 @@ export const searchProblemsInput = z.object({
   source: z.string().max(64).optional(),
   category: z.string().max(64).optional(),
   open_only: z.boolean().default(false),
-  has_progress: z.boolean().default(false),
   limit: z.number().int().min(1).max(50).default(20),
   cursor: z.string().max(32).optional(),
 });
@@ -166,7 +158,7 @@ export const createAttemptInput = z.object({
     )
     .max(32)
     .optional(),
-  idempotency_key: z.string().max(128).optional(),
+  idempotency_key: z.string().min(8).max(128).optional(),
 });
 
 export const updateAttemptInput = z.object({
@@ -195,9 +187,7 @@ export const updateAttemptInput = z.object({
               .min(1)
               .max(256)
               .regex(/^[A-Za-z_][A-Za-z0-9_.']*$/),
-            file: z
-              .string()
-              .regex(/^lean\/[A-Za-z0-9_./-]+\.lean$/),
+            file: z.string().regex(/^lean\/[A-Za-z0-9_./-]+\.lean$/),
             is_target_proof: z.boolean().default(false),
           }),
         )
@@ -245,12 +235,12 @@ export const updateAttemptInput = z.object({
     )
     .max(10)
     .optional(),
-  idempotency_key: z.string().max(128).optional(),
+  idempotency_key: z.string().min(8).max(128).optional(),
 });
 
 export const submitAttemptInput = z.object({
   attempt_id: attemptIdInput,
-  idempotency_key: z.string().max(128).optional(),
+  idempotency_key: z.string().min(8).max(128).optional(),
 });
 
 export const continueAttemptInput = z.object({
@@ -259,7 +249,7 @@ export const continueAttemptInput = z.object({
   kind: z.enum(ATTEMPT_KINDS).default("exploration"),
   title: z.string().min(1).max(200),
   summary: z.string().max(4000).optional(),
-  idempotency_key: z.string().max(128).optional(),
+  idempotency_key: z.string().min(8).max(128).optional(),
 });
 
 export const reviewAttemptInput = z.object({
@@ -275,7 +265,7 @@ export const reviewAttemptInput = z.object({
     "refutes",
   ]),
   body: z.string().min(1).max(16000),
-  idempotency_key: z.string().max(128).optional(),
+  idempotency_key: z.string().min(8).max(128).optional(),
 });
 
 export const reportAttemptInput = z.object({
@@ -288,12 +278,8 @@ export async function toolSearchProblems(
   ctx: ToolContext,
   input: z.infer<typeof searchProblemsInput>,
 ) {
-  const actor = ctx.actor;
-  if (actor) {
-    await consumeRateLimit(ctx.db, {
-      subject: `u${actor.githubUserId}`,
-      rule: RATE_LIMITS.searchPerMinute,
-    });
+  if (ctx.actor) {
+    consumeRateLimit(`u${ctx.actor.githubUserId}`, RATE_LIMITS.searchPerMinute);
   }
   const { items, nextCursor } = await searchCatalogProblems({
     query: input.query,
@@ -302,10 +288,10 @@ export async function toolSearchProblems(
     limit: input.limit,
     cursor: input.cursor,
   });
-  const withStats = await Promise.all(
-    items.map(async (p) => {
-      const stats = await getProblemStats(ctx.db, p.problemKey);
-      return {
+  const catalog = await loadCatalog();
+  return jsonResult(
+    trusted({
+      problems: items.map((p) => ({
         problem_key: p.problemKey,
         title: p.title,
         source: p.source,
@@ -315,20 +301,11 @@ export async function toolSearchProblems(
         upstream_declaration: p.upstreamDeclaration,
         upstream_module: p.upstreamModule,
         source_url: p.sourceUrl,
-        stats,
-      };
-    }),
-  );
-  const filtered = input.has_progress
-    ? withStats.filter((p) => p.stats.totalAttempts > 0)
-    : withStats;
-  return jsonResult(
-    trusted({
-      problems: filtered,
+      })),
       next_cursor: nextCursor,
       catalog: {
-        upstream_repo: (await loadCatalog()).upstreamRepo,
-        upstream_commit: (await loadCatalog()).upstreamCommit,
+        upstream_repo: catalog.upstreamRepo,
+        upstream_commit: catalog.upstreamCommit,
       },
     }),
   );
@@ -345,11 +322,11 @@ export async function toolGetProblem(
       `Problem "${input.problem_key}" does not exist in the catalog.`,
     );
   }
-  const stats = await getProblemStats(ctx.db, input.problem_key);
-  const { frontier } = await buildFrontier(ctx.db, {
+  const serviceCtx = buildServiceContext(ctx);
+  const { frontier } = await buildFrontier(serviceCtx, {
     problemKey: input.problem_key,
     maxChars: 4000,
-  });
+  }).catch(() => ({ frontier: [] }));
   return jsonResult({
     problem: trusted({
       problem_key: problem.problemKey,
@@ -375,7 +352,6 @@ export async function toolGetProblem(
         problem.upstreamCommit,
         problem.statementHash,
       ),
-      progress_stats: stats,
     }),
     frontier_summary: frontier.slice(0, 5).map((f) =>
       untrusted({
@@ -395,59 +371,69 @@ export async function toolListAttempts(
   ctx: ToolContext,
   input: z.infer<typeof listAttemptsInput>,
 ) {
-  const conditions = [eq(attempts.problemKey, input.problem_key)];
-  if (input.kind) conditions.push(eq(attempts.kind, input.kind));
-  if (input.verification_status) {
-    conditions.push(
-      eq(attempts.verificationStatus, input.verification_status),
+  const serviceCtx = buildServiceContext(ctx);
+  const { buildMergedAttemptIndex } = await import("../frontier/frontier");
+  const index = await buildMergedAttemptIndex(serviceCtx, input.problem_key);
+  const attestations = await readAllAttestations(
+    serviceCtx.github,
+    serviceCtx.progressBranch,
+  );
+
+  let items = index.attempts;
+  if (input.kind) items = items.filter((a) => a.kind === input.kind);
+  if (input.author_github_user_id) {
+    items = items.filter(
+      (a) => a.ownerGithubUserId === input.author_github_user_id,
     );
   }
-  if (input.author_github_user_id) {
-    conditions.push(
-      eq(attempts.ownerGithubUserId, input.author_github_user_id),
+  if (input.parent_attempt_id) {
+    const childIds = new Set(
+      index.edges
+        .filter((e) => e.parent === input.parent_attempt_id)
+        .map((e) => e.child),
+    );
+    items = items.filter((a) => childIds.has(a.attemptId));
+  }
+
+  const withViews = items.map((a) => ({
+    attempt: a,
+    view: deriveVerificationView(a.attemptId, attestations, index.edges),
+  }));
+  let filtered = withViews;
+  if (!input.include_quarantined) {
+    filtered = filtered.filter((x) => !x.view.quarantined);
+  }
+  if (input.verification_status) {
+    filtered = filtered.filter(
+      (x) => x.view.verificationStatus === input.verification_status,
     );
   }
   if (input.verified_only) {
-    conditions.push(eq(attempts.verificationStatus, "lean_verified"));
+    filtered = filtered.filter(
+      (x) => x.view.verificationStatus === "lean_verified",
+    );
   }
-  if (!input.include_quarantined) {
-    conditions.push(ne(attempts.verificationStatus, "quarantined"));
-  }
-  let filtered = await ctx.db
-    .select()
-    .from(attempts)
-    .where(and(...conditions))
-    .orderBy(
-      input.order === "newest" ? desc(attempts.createdAt) : attempts.createdAt,
-    )
-    .limit(input.limit);
-
-  if (input.parent_attempt_id) {
-    const edges = await ctx.db
-      .select()
-      .from(attemptEdges)
-      .where(eq(attemptEdges.parentAttemptId, input.parent_attempt_id));
-    const childIds = new Set(edges.map((e) => e.childAttemptId));
-    filtered = filtered.filter((a) => childIds.has(a.attemptId));
-  }
+  filtered.sort((a, b) =>
+    input.order === "newest"
+      ? b.attempt.createdAt.localeCompare(a.attempt.createdAt)
+      : a.attempt.createdAt.localeCompare(b.attempt.createdAt),
+  );
+  const page = filtered.slice(0, input.limit);
 
   return jsonResult({
-    attempts: filtered.map((a) =>
+    attempts: page.map(({ attempt, view }) =>
       untrusted({
-        attempt_id: a.attemptId,
-        kind: a.kind,
-        title: a.title,
-        summary: a.summary,
-        status: a.status,
-        verification_status: a.verificationStatus,
-        relevance_status: a.relevanceStatus,
+        attempt_id: attempt.attemptId,
+        kind: attempt.kind,
+        title: attempt.title,
+        summary: attempt.summary,
+        status: "merged",
+        verification_status: view.verificationStatus,
         author: {
-          github_user_id: a.ownerGithubUserId,
-          github_login: a.ownerGithubLogin,
+          github_user_id: attempt.ownerGithubUserId,
+          github_login: attempt.ownerGithubLogin,
         },
-        created_at: a.createdAt.toISOString(),
-        merged_at: a.mergedAt?.toISOString() ?? null,
-        pr_url: a.prUrl,
+        created_at: attempt.createdAt,
       }),
     ),
     notice: UNTRUSTED_CONTENT_NOTICE,
@@ -458,90 +444,98 @@ export async function toolGetAttempt(
   ctx: ToolContext,
   input: z.infer<typeof getAttemptInput>,
 ) {
-  const rows = await ctx.db
-    .select()
-    .from(attempts)
-    .where(eq(attempts.attemptId, input.attempt_id))
-    .limit(1);
-  const attempt = rows[0];
-  if (!attempt) {
+  const serviceCtx = buildServiceContext(ctx);
+  const record = await findAttemptById(serviceCtx, input.attempt_id);
+  if (!record) {
     throw new InferFundError(
       "ATTEMPT_NOT_FOUND",
       `Attempt ${input.attempt_id} does not exist.`,
     );
   }
-  const parents = await ctx.db
-    .select()
-    .from(attemptEdges)
-    .where(eq(attemptEdges.childAttemptId, attempt.attemptId));
-  const children = await ctx.db
-    .select()
-    .from(attemptEdges)
-    .where(eq(attemptEdges.parentAttemptId, attempt.attemptId));
-
-  let manifest: unknown = null;
-  let readme: string | null = null;
-  const dir = attemptDirectory(attempt.problemKey, attempt.attemptId);
-  if (attempt.status !== "pending" || attempt.ownerGithubUserId === ctx.actor?.githubUserId) {
-    const branch =
-      attempt.status === "merged"
-        ? getConfig().INFERFUND_PROGRESS_BRANCH
-        : attempt.branchName;
-    const manifestFile = await ctx.github.readFile(
-      branch,
-      `${dir}/manifest.json`,
+  if (
+    record.status === "pending" &&
+    record.ownerGithubUserId !== ctx.actor?.githubUserId
+  ) {
+    throw new InferFundError(
+      "ATTEMPT_NOT_FOUND",
+      `Attempt ${input.attempt_id} does not exist.`,
     );
-    if (manifestFile) {
-      try {
-        manifest = JSON.parse(manifestFile.content);
-      } catch {
-        manifest = null;
-      }
-    }
-    if (input.include_readme) {
+  }
+  const attestations = await readAllAttestations(
+    serviceCtx.github,
+    serviceCtx.progressBranch,
+  );
+  const index = await buildMergedAttemptIndexSafe(serviceCtx, record.problemKey);
+  const view = deriveVerificationView(
+    record.attemptId,
+    attestations,
+    index?.edges ?? [],
+  );
+
+  let readme: string | null = null;
+  if (input.include_readme) {
+    const dir = attemptDirectory(record.problemKey, record.attemptId);
+    const ref =
+      record.status === "merged" || record.status === "closed"
+        ? serviceCtx.progressBranch
+        : record.branchName;
+    if (ref) {
       readme =
-        (await ctx.github.readFile(branch, `${dir}/README.md`))?.content ??
+        (await serviceCtx.github.readFile(ref, `${dir}/README.md`))?.content ??
         null;
     }
   }
 
+  const children = (index?.edges ?? [])
+    .filter((e) => e.parent === record.attemptId)
+    .map((e) => ({ attempt_id: e.child, relationship: e.relationship }));
+
   return jsonResult({
     metadata: trusted({
-      attempt_id: attempt.attemptId,
-      problem_key: attempt.problemKey,
-      problem_version_id: attempt.problemVersionId,
-      kind: attempt.kind,
-      status: attempt.status,
-      verification_status: attempt.verificationStatus,
-      relevance_status: attempt.relevanceStatus,
-      solves_target: attempt.solvesTarget,
-      branch: attempt.branchName,
-      base_progress_sha: attempt.baseProgressSha,
-      pr_number: attempt.prNumber,
-      pr_url: attempt.prUrl,
-      created_at: attempt.createdAt.toISOString(),
-      merged_at: attempt.mergedAt?.toISOString() ?? null,
-      parents: parents.map((p) => ({
-        attempt_id: p.parentAttemptId,
-        relationship: p.relationship,
-      })),
-      referenced_by: children.map((c) => ({
-        attempt_id: c.childAttemptId,
-        relationship: c.relationship,
-      })),
+      attempt_id: record.attemptId,
+      problem_key: record.problemKey,
+      problem_version_id: record.manifest.problem.problem_version_id,
+      kind: record.kind,
+      status: record.status,
+      verification_status: view.verificationStatus,
+      relevance_status:
+        record.solvesTarget && view.verificationStatus === "lean_verified"
+          ? "solves_target"
+          : "unreviewed",
+      solves_target: record.solvesTarget,
+      branch: record.branchName,
+      base_progress_sha: record.baseProgressSha,
+      pr_number: record.prNumber,
+      pr_url: record.prUrl,
+      created_at: record.createdAt,
+      merged_at: record.mergedAt,
+      parents: record.parents,
+      referenced_by: children,
     }),
     content: untrusted({
-      title: attempt.title,
-      summary: attempt.summary,
+      title: record.title,
+      summary: record.summary,
       author: {
-        github_user_id: attempt.ownerGithubUserId,
-        github_login: attempt.ownerGithubLogin,
+        github_user_id: record.ownerGithubUserId,
+        github_login: record.ownerGithubLogin,
       },
-      manifest,
+      manifest: record.manifest,
       readme,
     }),
     notice: UNTRUSTED_CONTENT_NOTICE,
   });
+}
+
+async function buildMergedAttemptIndexSafe(
+  serviceCtx: ServiceContext,
+  problemKey: string,
+) {
+  try {
+    const { buildMergedAttemptIndex } = await import("../frontier/frontier");
+    return await buildMergedAttemptIndex(serviceCtx, problemKey);
+  } catch {
+    return null;
+  }
 }
 
 export async function toolGetFrontier(
@@ -555,7 +549,8 @@ export async function toolGetFrontier(
       `Problem "${input.problem_key}" does not exist in the catalog.`,
     );
   }
-  const { frontier, truncated } = await buildFrontier(ctx.db, {
+  const serviceCtx = buildServiceContext(ctx);
+  const { frontier, truncated } = await buildFrontier(serviceCtx, {
     problemKey: input.problem_key,
     maxChars: input.max_chars,
   });
@@ -654,7 +649,6 @@ export async function toolUpdateAttempt(
     manifestUpdates: input.manifest_updates,
     artifacts: input.artifacts,
     leanFiles: input.lean_files,
-    idempotencyKey: input.idempotency_key,
   });
   return jsonResult(trusted(result));
 }
@@ -668,7 +662,6 @@ export async function toolSubmitAttempt(
   const serviceCtx = buildServiceContext(ctx);
   const result = await submitAttempt(serviceCtx, actor, {
     attemptId: input.attempt_id,
-    idempotencyKey: input.idempotency_key,
   });
   return jsonResult(
     trusted({
@@ -687,12 +680,8 @@ export async function toolContinueAttempt(
 ) {
   const actor = requireAuth(ctx);
   requireScope(ctx, "inferfund:contribute");
-  const parentRows = await ctx.db
-    .select()
-    .from(attempts)
-    .where(eq(attempts.attemptId, input.parent_attempt_id))
-    .limit(1);
-  const parent = parentRows[0];
+  const serviceCtx = buildServiceContext(ctx);
+  const parent = await findAttemptById(serviceCtx, input.parent_attempt_id);
   if (!parent) {
     throw new InferFundError(
       "ATTEMPT_NOT_FOUND",
@@ -717,7 +706,6 @@ export async function toolContinueAttempt(
     problem.upstreamCommit,
     problem.statementHash,
   );
-  const serviceCtx = buildServiceContext(ctx);
   const result = await createAttempt(serviceCtx, actor, {
     problem,
     problemVersionId: versionId,
@@ -767,12 +755,8 @@ export async function toolReviewAttempt(
         "identifying the exact problem.",
     );
   }
-  const targetRows = await ctx.db
-    .select()
-    .from(attempts)
-    .where(eq(attempts.attemptId, input.target_attempt_id))
-    .limit(1);
-  const target = targetRows[0];
+  const serviceCtx = buildServiceContext(ctx);
+  const target = await findAttemptById(serviceCtx, input.target_attempt_id);
   if (!target) {
     throw new InferFundError(
       "ATTEMPT_NOT_FOUND",
@@ -796,10 +780,9 @@ export async function toolReviewAttempt(
       `Problem "${target.problemKey}" is no longer in the catalog.`,
     );
   }
-  const serviceCtx = buildServiceContext(ctx);
   const created = await createAttempt(serviceCtx, actor, {
     problem,
-    problemVersionId: target.problemVersionId,
+    problemVersionId: target.manifest.problem.problem_version_id,
     kind: input.review_type === "reproduces" ? "reproduction" : "review",
     title: `Review (${input.review_type}) of ${target.attemptId.slice(0, 8)}`,
     summary: input.body.slice(0, 4000),
@@ -844,10 +827,9 @@ export async function toolReportAttempt(
   return jsonResult(
     trusted({
       ...result,
-      note: "Moderators have been notified. Moderation is separate from " +
+      note:
+        "Moderators have been notified. Moderation is separate from " +
         "mathematical correctness; use review_attempt for correctness issues.",
     }),
   );
 }
-
-export { getActorFromToken };

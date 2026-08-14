@@ -1,21 +1,29 @@
-import { sql } from "drizzle-orm";
-import { getDb } from "@/lib/db/client";
 import { getConfig } from "@/lib/config";
+import { getGitHubService } from "@/lib/github/octokit-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(): Promise<Response> {
-  let dbStatus: "ok" | "unavailable" = "ok";
-  try {
-    await getDb().execute(sql`select 1`);
-  } catch {
-    dbStatus = "unavailable";
-  }
   const config = getConfig();
+  let githubStatus: "ok" | "unconfigured" | "unavailable" = "unconfigured";
+  if (
+    config.GITHUB_APP_ID ||
+    (config.GITHUB_DEV_ADMIN_TOKEN && !config.isProduction)
+  ) {
+    try {
+      const head = await getGitHubService().getBranchHead(
+        config.INFERFUND_PROGRESS_BRANCH,
+      );
+      githubStatus = head ? "ok" : "unavailable";
+    } catch {
+      githubStatus = "unavailable";
+    }
+  }
   const body = {
-    status: dbStatus === "ok" ? "ok" : "degraded",
-    database: dbStatus,
+    status: "ok",
+    github: githubStatus,
+    progress_branch: config.INFERFUND_PROGRESS_BRANCH,
     github_app_configured: Boolean(
       config.GITHUB_APP_ID &&
         config.GITHUB_APP_INSTALLATION_ID &&
@@ -29,7 +37,7 @@ export async function GET(): Promise<Response> {
     time: new Date().toISOString(),
   };
   return new Response(JSON.stringify(body), {
-    status: dbStatus === "ok" ? 200 : 503,
+    status: 200,
     headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 }

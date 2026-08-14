@@ -154,6 +154,7 @@ export const manifestSchema = z
       )
       .max(64)
       .default([]),
+    client_nonce: z.string().min(8).max(128).optional(),
   })
   .strict();
 

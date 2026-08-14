@@ -1,14 +1,20 @@
-import { describe, expect, it } from "vitest";
-import { makeHarness, seedUsers, ALICE, BOB, SAMPLE_PROBLEM } from "./setup";
+import { beforeEach, describe, expect, it } from "vitest";
+import { makeHarness, ALICE, BOB, SAMPLE_PROBLEM } from "./setup";
 import {
   createAttempt,
   submitAttempt,
-  recordAttemptMerged,
+  findAttemptById,
 } from "../src/lib/attempts/service";
-import { buildFrontier } from "../src/lib/frontier/frontier";
+import {
+  buildFrontier,
+  clearFrontierCacheForTests,
+} from "../src/lib/frontier/frontier";
+import {
+  clearAttestationCacheForTests,
+  createAttestationPr,
+} from "../src/lib/attestations";
 import { problemVersionId } from "../src/lib/problems/catalog";
-import { attempts } from "../src/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { resetRateLimitsForTests } from "../src/lib/ratelimit/limiter";
 
 const VERSION_ID = problemVersionId(
   SAMPLE_PROBLEM.problemKey,
@@ -16,82 +22,89 @@ const VERSION_ID = problemVersionId(
   SAMPLE_PROBLEM.statementHash,
 );
 
+beforeEach(() => {
+  resetRateLimitsForTests();
+  clearFrontierCacheForTests();
+  clearAttestationCacheForTests();
+});
+
+type Harness = ReturnType<typeof makeHarness>;
+
 async function mergedAttempt(
-  h: Awaited<ReturnType<typeof makeHarness>>,
+  h: Harness,
   actor: typeof ALICE,
   title: string,
-  kind: "lemma" | "exploration" | "refutation" | "proof",
-) {
+  kind: "lemma" | "exploration" | "refutation" | "proof" | "reproduction",
+  parents?: Array<{ attempt_id: string; relationship: "extends" | "reproduces" | "refutes" | "critiques" }>,
+): Promise<string> {
   const created = await createAttempt(h.ctx, actor, {
     problem: SAMPLE_PROBLEM,
     problemVersionId: VERSION_ID,
     kind,
     title,
     summary: `Summary for ${title} with enough characters.`,
+    parents,
   });
-  await updateSummary(h, created.attempt_id, actor);
   const submitted = await submitAttempt(h.ctx, actor, {
     attemptId: created.attempt_id,
   });
-  const mergeSha = h.github.mergePr(submitted.pr_number);
-  await recordAttemptMerged(h.ctx, {
-    attemptId: created.attempt_id,
-    mergeCommitSha: mergeSha,
-  });
+  h.github.mergePr(submitted.pr_number);
+  clearFrontierCacheForTests();
+  clearAttestationCacheForTests();
   return created.attempt_id;
 }
 
-async function updateSummary(
-  h: Awaited<ReturnType<typeof makeHarness>>,
-  attemptId: string,
-  actor: typeof ALICE,
-) {
-  const { updateAttempt } = await import("../src/lib/attempts/service");
-  await updateAttempt(h.ctx, actor, {
-    attemptId,
-    manifestUpdates: { summary: "A sufficiently detailed summary." },
-  });
-}
-
-describe("frontier generation", () => {
-  it("ranks verified above unverified and excludes quarantined by default", async () => {
-    const h = await makeHarness();
-    await seedUsers(h);
+describe("frontier generation (Git-backed)", () => {
+  it("ranks lean-verified above unverified and excludes quarantined", async () => {
+    const h = makeHarness();
     const unverified = await mergedAttempt(h, ALICE, "Speculative idea", "exploration");
     const verified = await mergedAttempt(h, BOB, "Verified lemma", "lemma");
-    const quarantined = await mergedAttempt(h, BOB, "Spam", "exploration");
+    const spam = await mergedAttempt(h, BOB, "Spam", "exploration");
 
-    await h.db
-      .update(attempts)
-      .set({ verificationStatus: "lean_verified" })
-      .where(eq(attempts.attemptId, verified));
-    await h.db
-      .update(attempts)
-      .set({ verificationStatus: "quarantined" })
-      .where(eq(attempts.attemptId, quarantined));
+    await createAttestationPr(h.github, "progress", {
+      type: "lean_verified",
+      attempt_id: verified,
+      actor_kind: "verifier",
+    }).then(async (r) => {
+      const prs = h.github.openPrs();
+      const pr = prs.find((p) => p.headBranch === `attestation/${r.attestation_id}`);
+      if (pr) h.github.mergePr(pr.number);
+    });
+    const q = await createAttestationPr(h.github, "progress", {
+      type: "quarantined",
+      attempt_id: spam,
+      actor_kind: "admin",
+      actor_github_user_id: 99999999,
+      reason: "spam",
+    });
+    const qpr = h.github.openPrs().find(
+      (p) => p.headBranch === `attestation/${q.attestation_id}`,
+    );
+    if (qpr) h.github.mergePr(qpr.number);
+    clearFrontierCacheForTests();
+    clearAttestationCacheForTests();
 
-    const { frontier } = await buildFrontier(h.db, {
+    const { frontier } = await buildFrontier(h.ctx, {
       problemKey: SAMPLE_PROBLEM.problemKey,
       maxChars: 20000,
     });
     const ids = frontier.map((f) => f.attempt_id);
     expect(ids).toContain(verified);
     expect(ids).toContain(unverified);
-    expect(ids).not.toContain(quarantined);
+    expect(ids).not.toContain(spam);
     expect(ids.indexOf(verified)).toBeLessThan(ids.indexOf(unverified));
-    const verifiedEntry = frontier.find((f) => f.attempt_id === verified);
-    expect(verifiedEntry?.bucket).toBe("VERIFIED");
+    expect(
+      frontier.find((f) => f.attempt_id === verified)?.bucket,
+    ).toBe("VERIFIED");
   });
 
-  it("labels refuted work clearly", async () => {
-    const h = await makeHarness();
-    await seedUsers(h);
+  it("derives refuted status from refuting edges", async () => {
+    const h = makeHarness();
     const bad = await mergedAttempt(h, ALICE, "Wrong approach", "exploration");
-    await h.db
-      .update(attempts)
-      .set({ verificationStatus: "refuted" })
-      .where(eq(attempts.attemptId, bad));
-    const { frontier } = await buildFrontier(h.db, {
+    await mergedAttempt(h, BOB, "Refutation of the wrong approach", "refutation", [
+      { attempt_id: bad, relationship: "refutes" },
+    ]);
+    const { frontier } = await buildFrontier(h.ctx, {
       problemKey: SAMPLE_PROBLEM.problemKey,
       maxChars: 20000,
     });
@@ -100,15 +113,14 @@ describe("frontier generation", () => {
   });
 
   it("respects the max_chars budget", async () => {
-    const h = await makeHarness();
-    await seedUsers(h);
+    const h = makeHarness();
+    h.ctx.maxOpenAttempts = 50;
     h.ctx.maxAttemptsPerDay = 50;
     h.ctx.maxSubmissionsPerDay = 50;
-    h.ctx.maxOpenAttempts = 50;
     for (let i = 0; i < 8; i++) {
       await mergedAttempt(h, ALICE, `Attempt number ${i}`, "exploration");
     }
-    const { frontier, truncated } = await buildFrontier(h.db, {
+    const { frontier, truncated } = await buildFrontier(h.ctx, {
       problemKey: SAMPLE_PROBLEM.problemKey,
       maxChars: 1500,
     });
@@ -116,35 +128,20 @@ describe("frontier generation", () => {
     expect(truncated).toBe(true);
   });
 
-  it("parent edges are recorded and reconstructed", async () => {
-    const h = await makeHarness();
-    await seedUsers(h);
+  it("parent edges are recorded in manifests and reconstructed", async () => {
+    const h = makeHarness();
     const parent = await mergedAttempt(h, ALICE, "Base result", "lemma");
-    const childCreated = await createAttempt(h.ctx, BOB, {
-      problem: SAMPLE_PROBLEM,
-      problemVersionId: VERSION_ID,
-      kind: "lemma",
-      title: "Child result",
-      summary: "Builds on the base result.",
-      parents: [{ attempt_id: parent, relationship: "extends" }],
-    });
-    const edges = await h.db
-      .select()
-      .from((await import("../src/lib/db/schema")).attemptEdges)
-      .where(
-        eq(
-          (await import("../src/lib/db/schema")).attemptEdges.childAttemptId,
-          childCreated.attempt_id,
-        ),
-      );
-    expect(edges).toHaveLength(1);
-    expect(edges[0]?.parentAttemptId).toBe(parent);
-    expect(edges[0]?.relationship).toBe("extends");
+    const child = await mergedAttempt(h, BOB, "Child result", "lemma", [
+      { attempt_id: parent, relationship: "extends" },
+    ]);
+    const record = await findAttemptById(h.ctx, child);
+    expect(record?.parents).toEqual([
+      { attempt_id: parent, relationship: "extends" },
+    ]);
   });
 
   it("rejects parents that are not merged", async () => {
-    const h = await makeHarness();
-    await seedUsers(h);
+    const h = makeHarness();
     const pending = await createAttempt(h.ctx, ALICE, {
       problem: SAMPLE_PROBLEM,
       problemVersionId: VERSION_ID,
@@ -161,5 +158,23 @@ describe("frontier generation", () => {
         parents: [{ attempt_id: pending.attempt_id, relationship: "extends" }],
       }),
     ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
+
+  it("rejects nonexistent parents", async () => {
+    const h = makeHarness();
+    await expect(
+      createAttempt(h.ctx, ALICE, {
+        problem: SAMPLE_PROBLEM,
+        problemVersionId: VERSION_ID,
+        kind: "lemma",
+        title: "Ghost parent",
+        parents: [
+          {
+            attempt_id: "0195e7c0-8e7a-7f82-bfa2-a91338dd7b53",
+            relationship: "extends",
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "ATTEMPT_NOT_FOUND" });
   });
 });

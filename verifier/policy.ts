@@ -84,6 +84,7 @@ export interface PolicyResult {
   hasLean: boolean;
   solvesTarget: boolean;
   manifest: PolicyManifest | null;
+  prKind: "attempt" | "attestation";
 }
 
 const ATTEMPT_BRANCH_RE =
@@ -100,7 +101,77 @@ const FORBIDDEN_CONTENT_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\bsk-[A-Za-z0-9_-]{20,}\b/, label: "API key pattern" },
 ];
 
+const ATTESTATION_BRANCH_RE =
+  /^attestation\/([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+
+export function validateAttestationPullRequest(input: {
+  prBaseBranch: string;
+  headBranch: string;
+  files: DiffFile[];
+}): PolicyResult {
+  const violations: string[] = [];
+  if (input.prBaseBranch !== "progress") {
+    violations.push(
+      `Attestation PR base branch is "${input.prBaseBranch}", must be "progress".`,
+    );
+  }
+  const match = ATTESTATION_BRANCH_RE.exec(input.headBranch);
+  if (!match) {
+    violations.push(
+      `Attestation branch "${input.headBranch}" must be attestation/<UUIDV7>.`,
+    );
+  }
+  if (input.files.length === 0) {
+    violations.push("Attestation PR changes no files.");
+  }
+  for (const file of input.files) {
+    if (file.status !== "added") {
+      violations.push(
+        `Attestation file "${file.filename}" has status "${file.status}"; only "added" is allowed.`,
+      );
+      continue;
+    }
+    if (
+      !file.filename.startsWith("attestations/") ||
+      !file.filename.endsWith(".json")
+    ) {
+      violations.push(
+        `Attestation PRs may only add attestations/**/*.json; got "${file.filename}".`,
+      );
+      continue;
+    }
+    if (file.content !== undefined) {
+      try {
+        const parsed = JSON.parse(file.content) as { schema_version?: number };
+        if (parsed.schema_version !== 1) {
+          violations.push(
+            `Attestation "${file.filename}" has an unsupported schema_version.`,
+          );
+        }
+      } catch {
+        violations.push(`Attestation "${file.filename}" is not valid JSON.`);
+      }
+    }
+  }
+  return {
+    ok: violations.length === 0,
+    violations,
+    attemptDir: null,
+    hasLean: false,
+    solvesTarget: false,
+    manifest: null,
+    prKind: "attestation",
+  };
+}
+
+export function isAttestationBranch(branch: string): boolean {
+  return ATTESTATION_BRANCH_RE.test(branch);
+}
+
 export function validatePullRequestPolicy(input: PolicyInput): PolicyResult {
+  if (isAttestationBranch(input.headBranch)) {
+    return validateAttestationPullRequest(input);
+  }
   const violations: string[] = [];
   const attemptDir = `attempts/${input.expectedProblemKey}/${input.expectedAttemptId}`;
 
@@ -286,5 +357,6 @@ export function validatePullRequestPolicy(input: PolicyInput): PolicyResult {
     hasLean,
     solvesTarget,
     manifest,
+    prKind: "attempt",
   };
 }

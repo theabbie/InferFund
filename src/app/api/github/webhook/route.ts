@@ -1,15 +1,18 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { eq } from "drizzle-orm";
-import { getDb } from "@/lib/db/client";
 import { getConfig } from "@/lib/config";
-import { attempts } from "@/lib/db/schema";
-import { recordAttemptMerged, type ServiceContext } from "@/lib/attempts/service";
 import { getGitHubService } from "@/lib/github/octokit-service";
+import { createAttestationPr } from "@/lib/attestations";
+import { parseAttemptBranchName } from "@/lib/ids";
+import { audit } from "@/lib/audit/log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function verifySignature(secret: string, body: string, header: string): boolean {
+function verifySignature(
+  secret: string,
+  body: string,
+  header: string,
+): boolean {
   const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
   const a = Buffer.from(expected);
   const b = Buffer.from(header);
@@ -56,33 +59,47 @@ export async function POST(req: Request): Promise<Response> {
     payload.pull_request.merged &&
     payload.pull_request.base.ref === config.INFERFUND_PROGRESS_BRANCH
   ) {
-    const db = getDb();
-    const headBranch = payload.pull_request.head.ref;
-    const rows = await db
-      .select()
-      .from(attempts)
-      .where(eq(attempts.branchName, headBranch))
-      .limit(1);
-    const attempt = rows[0];
-    if (attempt && attempt.status !== "merged") {
-      const serviceCtx: ServiceContext = {
-        db,
-        github: getGitHubService(),
-        progressBranch: config.INFERFUND_PROGRESS_BRANCH,
-        attemptBranchPrefix: config.INFERFUND_ATTEMPT_BRANCH_PREFIX,
-        maxOpenAttempts: config.INFERFUND_MAX_OPEN_ATTEMPTS,
-        maxAttemptsPerDay: config.INFERFUND_MAX_ATTEMPTS_PER_DAY,
-        maxSubmissionsPerDay: config.INFERFUND_MAX_SUBMISSIONS_PER_DAY,
-        maxLeanSubmissionsPerDay:
-          config.INFERFUND_MAX_LEAN_SUBMISSIONS_PER_DAY,
-        maxAttemptBytes: config.INFERFUND_MAX_ATTEMPT_BYTES,
-        maxFilesPerAttempt: config.INFERFUND_MAX_FILES_PER_ATTEMPT,
-        writesEnabled: config.writesEnabled,
-      };
-      await recordAttemptMerged(serviceCtx, {
-        attemptId: attempt.attemptId,
-        mergeCommitSha: payload.pull_request.merge_commit_sha ?? "",
-      });
+    const parsedBranch = parseAttemptBranchName(payload.pull_request.head.ref);
+    if (parsedBranch && config.writesEnabled) {
+      const github = getGitHubService();
+      const checks = await github
+        .getCheckRunsForRef(payload.pull_request.head.sha)
+        .catch(() => []);
+      const verification = checks.find(
+        (c) => c.name === "inferfund-verification",
+      );
+      const policy = checks.find((c) => c.name === "inferfund-policy");
+      const leanVerified =
+        verification?.conclusion === "success" &&
+        checks.some((c) => c.name === "lean-execution");
+      try {
+        await createAttestationPr(github, config.INFERFUND_PROGRESS_BRANCH, {
+          type: leanVerified ? "lean_verified" : "structurally_valid",
+          attempt_id: parsedBranch.attemptId,
+          actor_kind: "system",
+          verifier: {
+            source_sha: payload.pull_request.head.sha,
+          },
+          payload: {
+            policy_check: policy?.conclusion ?? null,
+            verification_check: verification?.conclusion ?? null,
+            merge_commit: payload.pull_request.merge_commit_sha,
+            note: leanVerified
+              ? "Lean verification passed for declared theorems."
+              : "Merged with structural acceptance (unverified mathematics).",
+          },
+        });
+      } catch (error) {
+        audit({
+          actorKind: "system",
+          action: "attestation_creation_failed",
+          targetType: "attempt",
+          targetId: parsedBranch.attemptId,
+          details: {
+            error: error instanceof Error ? error.message : "unknown",
+          },
+        });
+      }
     }
   }
 

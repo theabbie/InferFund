@@ -1,4 +1,3 @@
-import { getDb } from "@/lib/db/client";
 import {
   beginGitHubAuthorization,
   validateAuthorizeRequest,
@@ -34,8 +33,7 @@ export async function GET(req: Request): Promise<Response> {
       "client_id and redirect_uri are required.",
     );
   }
-  const db = getDb();
-  const validated = await validateAuthorizeRequest(db, params);
+  const validated = await validateAuthorizeRequest(params);
   if (!validated.ok) {
     return oauthError(validated.status, validated.error, validated.description);
   }
@@ -51,7 +49,7 @@ export async function GET(req: Request): Promise<Response> {
       { status: 200, headers: { "content-type": "text/html; charset=utf-8" } },
     );
   }
-  const { githubUrl } = await beginGitHubAuthorization(db, params, validated);
+  const { githubUrl } = beginGitHubAuthorization(params, validated);
   return Response.redirect(githubUrl, 302);
 }
 

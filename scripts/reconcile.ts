@@ -1,64 +1,81 @@
-import { getDb } from "../src/lib/db/client";
-import { attempts } from "../src/lib/db/schema";
 import { getConfig } from "../src/lib/config";
 import { OctokitGitHubService } from "../src/lib/github/octokit-service";
+import { parseAttemptBranchName } from "../src/lib/ids";
 
 async function main(): Promise<void> {
   const config = getConfig();
-  const db = getDb();
   const github = new OctokitGitHubService();
 
-  console.log("InferFund reconciliation report");
-  console.log("================================");
+  console.log("InferFund reconciliation report (Git-only)");
+  console.log("==========================================");
 
-  const allAttempts = await db.select().from(attempts);
-  const branches = new Set(await github.listAttemptBranches());
   const progressHead = await github.getBranchHead(
     config.INFERFUND_PROGRESS_BRANCH,
   );
-  console.log(
-    `progress head: ${progressHead?.sha ?? "MISSING — run scripts/setup-github.ts"}`,
-  );
+  if (!progressHead) {
+    console.log(
+      `MISSING: "${config.INFERFUND_PROGRESS_BRANCH}" branch. Run npm run setup:github.`,
+    );
+    process.exit(2);
+  }
+  console.log(`progress head: ${progressHead.sha}`);
 
   let issues = 0;
-  const dbBranches = new Set(allAttempts.map((a) => a.branchName));
+  const branches = await github.listAttemptBranches(
+    `${config.INFERFUND_ATTEMPT_BRANCH_PREFIX}/`,
+  );
+  const openPrs = await github.listOpenPullRequests();
+  const openByBranch = new Map(openPrs.map((p) => [p.headBranch, p]));
 
-  for (const attempt of allAttempts) {
-    if (
-      (attempt.status === "pending" || attempt.status === "submitted") &&
-      !branches.has(attempt.branchName)
-    ) {
+  const { tree } = await github.getTreeRecursive(
+    config.INFERFUND_PROGRESS_BRANCH,
+  );
+  const mergedDirs = new Set(
+    tree
+      .map((t) => /^(attempts\/[a-z0-9-]+\/[0-9a-f-]{36})\//.exec(t.path)?.[1])
+      .filter((x): x is string => Boolean(x)),
+  );
+
+  for (const branch of branches) {
+    const parsed = parseAttemptBranchName(branch);
+    if (!parsed) {
+      console.log(`MALFORMED_BRANCH ${branch}`);
+      issues += 1;
+      continue;
+    }
+    const dir = `attempts/${parsed.problemKey}/${parsed.attemptId}`;
+    const openPr = openByBranch.get(branch);
+    const merged = mergedDirs.has(dir);
+    if (merged && openPr) {
       console.log(
-        `ORPHANED_DB_RECORD attempt=${attempt.attemptId} branch=${attempt.branchName} ` +
-          `(DB says ${attempt.status}, branch missing on GitHub)`,
+        `PR_OPEN_BUT_MERGED branch=${branch} pr=${openPr.number} (close the PR)`,
       );
       issues += 1;
     }
-    if (attempt.status === "submitted" && attempt.prNumber !== null) {
-      const pr = await github.getPullRequest(attempt.prNumber);
-      if (!pr) {
+    if (!merged && !openPr) {
+      const manifest = await github.readFile(branch, `${dir}/manifest.json`);
+      if (!manifest) {
         console.log(
-          `MISSING_PR attempt=${attempt.attemptId} pr=${attempt.prNumber}`,
-        );
-        issues += 1;
-      } else if (pr.state === "closed" && !pr.merged) {
-        console.log(
-          `PR_CLOSED_UNMERGED attempt=${attempt.attemptId} pr=${attempt.prNumber}`,
-        );
-        issues += 1;
-      } else if (pr.merged) {
-        console.log(
-          `MERGED_NOT_RECORDED attempt=${attempt.attemptId} pr=${attempt.prNumber}`,
+          `ORPHANED_BRANCH ${branch} (no manifest, no open PR, not merged — safe to delete)`,
         );
         issues += 1;
       }
     }
   }
 
-  for (const branch of branches) {
-    if (!dbBranches.has(branch)) {
+  for (const pr of openPrs) {
+    if (
+      !parseAttemptBranchName(pr.headBranch) &&
+      !pr.headBranch.startsWith("attestation/")
+    ) {
       console.log(
-        `ORPHANED_BRANCH ${branch} (exists on GitHub, no DB record — likely a failed create_attempt)`,
+        `NON_STANDARD_PR_OPEN pr=${pr.number} head=${pr.headBranch} base=${pr.baseBranch}`,
+      );
+      issues += 1;
+    }
+    if (pr.baseBranch !== config.INFERFUND_PROGRESS_BRANCH) {
+      console.log(
+        `WRONG_BASE pr=${pr.number} base=${pr.baseBranch} (must be ${config.INFERFUND_PROGRESS_BRANCH})`,
       );
       issues += 1;
     }
@@ -67,7 +84,7 @@ async function main(): Promise<void> {
   console.log(
     issues === 0
       ? "No inconsistencies found."
-      : `${issues} inconsistency/ies found. No automatic repairs were applied; inspect and resolve manually.`,
+      : `${issues} potential issue(s) found. No automatic repairs applied.`,
   );
   process.exit(issues === 0 ? 0 : 2);
 }

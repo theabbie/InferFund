@@ -1,12 +1,9 @@
-import { randomUUID } from "node:crypto";
-import type { AnyDatabase } from "../db/client";
-import { auditEvents } from "../db/schema";
-
 export type AuditActorKind =
   | "user"
   | "admin"
   | "service"
   | "system"
+  | "verifier"
   | "anonymous";
 
 const SENSITIVE_KEYS = new Set([
@@ -34,26 +31,23 @@ function sanitize(
   return clean;
 }
 
-export async function audit(
-  db: AnyDatabase,
-  event: {
-    actorGithubUserId?: number;
-    actorKind: AuditActorKind;
-    action: string;
-    targetType?: string;
-    targetId?: string;
-    details?: Record<string, unknown>;
-    ipHash?: string;
-  },
-): Promise<void> {
-  await db.insert(auditEvents).values({
-    id: randomUUID(),
-    actorGithubUserId: event.actorGithubUserId,
-    actorKind: event.actorKind,
+export function audit(event: {
+  actorGithubUserId?: number;
+  actorKind: AuditActorKind;
+  action: string;
+  targetType?: string;
+  targetId?: string;
+  details?: Record<string, unknown>;
+}): void {
+  const record = {
+    ts: new Date().toISOString(),
+    kind: "inferfund_audit",
+    actor: event.actorGithubUserId ?? null,
+    actor_kind: event.actorKind,
     action: event.action,
-    targetType: event.targetType,
-    targetId: event.targetId,
-    details: sanitize(event.details),
-    ipHash: event.ipHash,
-  });
+    target_type: event.targetType ?? null,
+    target_id: event.targetId ?? null,
+    details: sanitize(event.details) ?? null,
+  };
+  console.log(JSON.stringify(record));
 }

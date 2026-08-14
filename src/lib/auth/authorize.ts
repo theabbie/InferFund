@@ -1,8 +1,4 @@
-import { eq } from "drizzle-orm";
-import type { AnyDatabase } from "../db/client";
-import { oauthUpstreamStates } from "../db/schema";
 import { getConfig } from "../config";
-import { randomToken, sha256Hex } from "../ids";
 import { githubAuthorizeUrl } from "./github-oauth";
 import {
   resolveClient,
@@ -10,7 +6,13 @@ import {
   type RegisteredClient,
 } from "./clients";
 import { filterGrantableScopes, parseScopeString } from "./scopes";
-import { UPSTREAM_STATE_TTL_SECONDS } from "./tokens";
+import {
+  issueSignedPayload,
+  nowSeconds,
+  verifySignedPayload,
+  UPSTREAM_STATE_TTL_SECONDS,
+  type SignedPayload,
+} from "./stateless";
 
 export interface AuthorizeRequestParams {
   clientId: string;
@@ -35,7 +37,6 @@ export type AuthorizeValidation =
   | { ok: false; status: number; error: string; description: string };
 
 export async function validateAuthorizeRequest(
-  db: AnyDatabase,
   params: AuthorizeRequestParams,
 ): Promise<AuthorizeValidation> {
   const config = getConfig();
@@ -52,8 +53,8 @@ export async function validateAuthorizeRequest(
       ok: false,
       status: 400,
       error: "invalid_request",
-      description: "PKCE is required: code_challenge and " +
-        "code_challenge_method must be present.",
+      description:
+        "PKCE is required: code_challenge and code_challenge_method must be present.",
     };
   }
   if (params.codeChallengeMethod !== "S256") {
@@ -75,7 +76,7 @@ export async function validateAuthorizeRequest(
         config.INFERFUND_MCP_RESOURCE_URL,
     };
   }
-  const client = await resolveClient(db, params.clientId);
+  const client = await resolveClient(params.clientId);
   if (!client) {
     return {
       ok: false,
@@ -95,11 +96,7 @@ export async function validateAuthorizeRequest(
     };
   }
   const requestedScopes = parseScopeString(params.scope);
-  const grantable = filterGrantableScopes(
-    requestedScopes,
-    new Set<number>(),
-    -1,
-  );
+  const grantable = filterGrantableScopes(requestedScopes, new Set<number>(), -1);
   if (grantable === null) {
     return {
       ok: false,
@@ -120,28 +117,29 @@ export async function validateAuthorizeRequest(
   };
 }
 
-export async function beginGitHubAuthorization(
-  db: AnyDatabase,
+export function beginGitHubAuthorization(
   params: AuthorizeRequestParams,
   validated: Extract<AuthorizeValidation, { ok: true }>,
-): Promise<{ upstreamState: string; githubUrl: string }> {
+): { upstreamState: string; githubUrl: string } {
   const config = getConfig();
   if (!config.GITHUB_OAUTH_CLIENT_ID || !config.GITHUB_OAUTH_CLIENT_SECRET) {
     throw new Error(
       "GITHUB_OAUTH_CLIENT_ID/GITHUB_OAUTH_CLIENT_SECRET are not configured.",
     );
   }
-  const upstreamState = `ifs_${randomToken(24)}`;
-  await db.insert(oauthUpstreamStates).values({
-    stateHash: sha256Hex(upstreamState),
-    clientId: params.clientId,
-    clientRedirectUri: params.redirectUri,
-    clientState: params.state ?? "",
-    scopes: validated.scopes,
-    resource: validated.resource,
-    codeChallenge: validated.codeChallenge,
-    codeChallengeMethod: validated.codeChallengeMethod,
-    expiresAt: new Date(Date.now() + UPSTREAM_STATE_TTL_SECONDS * 1000),
+  const now = nowSeconds();
+  const upstreamState = issueSignedPayload(config.INFERFUND_SESSION_SECRET, {
+    v: 1,
+    typ: "state",
+    cid: params.clientId,
+    ruri: params.redirectUri,
+    cstate: params.state ?? "",
+    scp: validated.scopes,
+    res: validated.resource,
+    cc: validated.codeChallenge,
+    ccm: validated.codeChallengeMethod,
+    iat: now,
+    exp: now + UPSTREAM_STATE_TTL_SECONDS,
   });
   const callbackUrl = `${config.INFERFUND_BASE_URL}/auth/github/callback`;
   const githubUrl = githubAuthorizeUrl({
@@ -152,23 +150,7 @@ export async function beginGitHubAuthorization(
   return { upstreamState, githubUrl };
 }
 
-export async function consumeUpstreamState(
-  db: AnyDatabase,
-  state: string,
-): Promise<typeof oauthUpstreamStates.$inferSelect | null> {
-  const stateHash = sha256Hex(state);
-  const rows = await db
-    .select()
-    .from(oauthUpstreamStates)
-    .where(eq(oauthUpstreamStates.stateHash, stateHash))
-    .limit(1);
-  const row = rows[0];
-  if (!row) return null;
-  if (row.usedAt) return null;
-  if (row.expiresAt.getTime() < Date.now()) return null;
-  await db
-    .update(oauthUpstreamStates)
-    .set({ usedAt: new Date() })
-    .where(eq(oauthUpstreamStates.stateHash, stateHash));
-  return row;
+export function consumeUpstreamState(state: string): SignedPayload | null {
+  const config = getConfig();
+  return verifySignedPayload(config.INFERFUND_SESSION_SECRET, state, "state");
 }

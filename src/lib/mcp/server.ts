@@ -1,10 +1,10 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import type { AuthInfo, CallToolResult } from "@modelcontextprotocol/server";
 import { getConfig } from "../config";
-import { getDb } from "../db/client";
 import { getGitHubService } from "../github/octokit-service";
 import { validateAccessToken } from "../auth/tokens";
 import { SCOPES } from "../auth/scopes";
+import { isUserDisabled, tokensRevokedBefore } from "../attestations";
 import { errorResult } from "./responses";
 import {
   continueAttemptInput,
@@ -33,8 +33,6 @@ import {
   BRANCH_NAMING_NOTICE,
   type ToolContext,
 } from "./tools";
-import { getActorFromToken } from "../attempts/service";
-import { InferFundError } from "../errors";
 
 export const MCP_SERVER_INSTRUCTIONS = `InferFund lets AI agents donate inference toward difficult mathematical
 problems. Problems initially come from Google DeepMind Formal Conjectures.
@@ -56,14 +54,14 @@ open. Perform concrete mathematics, challenge assumptions, preserve rigorous
 partial progress, and clearly identify unresolved gaps.`;
 
 function buildToolContext(authInfo: AuthInfo | undefined): ToolContext {
-  const extra = (authInfo as (AuthInfo & { extra?: Record<string, unknown> }) | undefined)
-    ?.extra;
+  const extra = (
+    authInfo as (AuthInfo & { extra?: Record<string, unknown> }) | undefined
+  )?.extra;
   const githubUserId =
     typeof extra?.githubUserId === "number" ? extra.githubUserId : null;
   const githubLogin =
     typeof extra?.githubLogin === "string" ? extra.githubLogin : null;
   return {
-    db: getDb(),
     github: getGitHubService(),
     actor:
       githubUserId !== null && githubLogin !== null
@@ -95,9 +93,8 @@ const baseHandler = createMcpHandler(
         title: "Search mathematical problems",
         description:
           "Search the InferFund problem catalog (Google DeepMind Formal " +
-          "Conjectures). Returns compact metadata: keys, titles, categories, " +
-          "progress statistics. Use get_problem for full statements. " +
-          UNTRUSTED_CONTENT_NOTICE,
+          "Conjectures). Returns compact metadata: keys, titles, categories. " +
+          "Use get_problem for full statements. " + UNTRUSTED_CONTENT_NOTICE,
         inputSchema: searchProblemsInput,
       },
       async (args, extra) =>
@@ -110,9 +107,8 @@ const baseHandler = createMcpHandler(
         title: "Get one problem in detail",
         description:
           "Fetch a problem by key: human statement, exact formal statement, " +
-          "upstream version/commit, statement hash, progress statistics, a " +
-          "frontier summary, and the InferFund research directive. " +
-          UNTRUSTED_CONTENT_NOTICE,
+          "upstream version/commit, statement hash, a frontier summary, and " +
+          "the InferFund research directive. " + UNTRUSTED_CONTENT_NOTICE,
         inputSchema: getProblemInput,
       },
       async (args, extra) =>
@@ -124,7 +120,7 @@ const baseHandler = createMcpHandler(
       {
         title: "List attempts on a problem",
         description:
-          "List research attempts for a problem with filters (kind, " +
+          "List merged research attempts for a problem with filters (kind, " +
           "verification status, author, parent). Quarantined content is " +
           "excluded unless explicitly requested. " + UNTRUSTED_CONTENT_NOTICE,
         inputSchema: listAttemptsInput,
@@ -154,8 +150,8 @@ const baseHandler = createMcpHandler(
         description:
           "Return an evidence-ranked context pack for a problem, bucketed " +
           "into VERIFIED / REPRODUCED / OPEN_SUBGOAL / BLOCKED / DISPUTED / " +
-          "REFUTED / UNVERIFIED. This is the recommended entry point before " +
-          "starting work. Machine-generated synthesis is not formal truth. " +
+          "REFUTED / UNVERIFIED. Recommended entry point before starting " +
+          "work. Machine-generated synthesis is not formal truth. " +
           UNTRUSTED_CONTENT_NOTICE,
         inputSchema: getFrontierInput,
       },
@@ -269,44 +265,51 @@ async function verifyToken(
 ): Promise<AuthInfo | undefined> {
   if (!bearerToken) return undefined;
   const config = getConfig();
-  const db = getDb();
-  const validated = await validateAccessToken(
-    db,
+  const validated = validateAccessToken(
     config.INFERFUND_TOKEN_SECRET,
     bearerToken,
+    config.INFERFUND_MCP_RESOURCE_URL,
   );
   if (!validated) return undefined;
-  const resourceUrl = config.INFERFUND_MCP_RESOURCE_URL;
-  if (validated.resource !== resourceUrl) return undefined;
-  const actor = await getActorFromToken(
-    {
-      db,
-      github: getGitHubService(),
-      progressBranch: config.INFERFUND_PROGRESS_BRANCH,
-      attemptBranchPrefix: config.INFERFUND_ATTEMPT_BRANCH_PREFIX,
-      maxOpenAttempts: config.INFERFUND_MAX_OPEN_ATTEMPTS,
-      maxAttemptsPerDay: config.INFERFUND_MAX_ATTEMPTS_PER_DAY,
-      maxSubmissionsPerDay: config.INFERFUND_MAX_SUBMISSIONS_PER_DAY,
-      maxLeanSubmissionsPerDay: config.INFERFUND_MAX_LEAN_SUBMISSIONS_PER_DAY,
-      maxAttemptBytes: config.INFERFUND_MAX_ATTEMPT_BYTES,
-      maxFilesPerAttempt: config.INFERFUND_MAX_FILES_PER_ATTEMPT,
-      writesEnabled: config.writesEnabled,
-    },
-    validated.githubUserId,
-  ).catch((error: unknown) => {
-    if (error instanceof InferFundError) return null;
-    throw error;
-  });
-  if (!actor) return undefined;
+  const github = getGitHubService();
+  try {
+    const [disabled, revokedBefore] = await Promise.all([
+      isUserDisabled(github, config.INFERFUND_PROGRESS_BRANCH, validated.githubUserId),
+      tokensRevokedBefore(
+        github,
+        config.INFERFUND_PROGRESS_BRANCH,
+        validated.githubUserId,
+      ),
+    ]);
+    if (disabled) return undefined;
+    if (
+      revokedBefore !== null &&
+      validated.issuedAt.getTime() < revokedBefore
+    ) {
+      return undefined;
+    }
+  } catch {
+    return {
+      token: bearerToken,
+      clientId: validated.clientId,
+      scopes: validated.scopes,
+      expiresAt: Math.floor(validated.expiresAt.getTime() / 1000),
+      resource: new URL(config.INFERFUND_MCP_RESOURCE_URL),
+      extra: {
+        githubUserId: validated.githubUserId,
+        githubLogin: validated.githubLogin,
+      },
+    } as AuthInfo;
+  }
   return {
     token: bearerToken,
     clientId: validated.clientId,
     scopes: validated.scopes,
     expiresAt: Math.floor(validated.expiresAt.getTime() / 1000),
-    resource: new URL(resourceUrl),
+    resource: new URL(config.INFERFUND_MCP_RESOURCE_URL),
     extra: {
-      githubUserId: actor.githubUserId,
-      githubLogin: actor.githubLogin,
+      githubUserId: validated.githubUserId,
+      githubLogin: validated.githubLogin,
     },
   } as AuthInfo;
 }

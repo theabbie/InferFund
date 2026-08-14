@@ -4,20 +4,30 @@ _Status: V1. This file records consequential design decisions (and why)._
 
 ## Overview
 
-InferFund is a remote MCP server deployed on Vercel with two planes:
+InferFund is a remote MCP server deployed on Vercel with **zero databases**.
+It is fully stateless; all durable state lives in Git and GitHub metadata:
 
-- **Control plane — PostgreSQL** (Drizzle ORM): users, OAuth clients/codes/
-  tokens, collaboration state, attempts, attempt edges, PRs, verification
-  runs, attestations, moderation events, audit log, rate-limit buckets,
-  idempotency keys.
 - **Artifact plane — GitHub**: the orphan `progress` branch holds the
   canonical, immutable mathematical record (`attempts/…`, `attestations/…`).
   `main` holds all application code and all GitHub Actions workflows.
+- **Derived control plane — GitHub metadata**: attempt status is derived from
+  branch existence, open/merged PRs, and the `progress` tree. Rate limits are
+  in-memory per instance, reinforced by GitHub-derived quotas (branch counts,
+  PR creation counts). Audit is structured JSON logs.
+- **Auth plane — signed stateless tokens**: OAuth authorization codes,
+  upstream states, access/refresh tokens, and DCR client registrations are
+  HMAC-signed self-contained payloads with expiry. Nothing is stored.
 
-Rule (spec §80): Git is canonical for merged mathematical artifacts; the DB is
-authoritative for auth, ownership of *pending* attempts, rate limits and
-workflow state. On divergence, never silently rewrite Git; run
-`npm run reconcile`.
+Decision (owner-directed, supersedes the original Postgres plan): no database
+anywhere. Rationale: every piece of state the DB held is either derivable
+from Git + GitHub (attempts, ownership, verification overlays, quotas) or
+short-lived OAuth transaction data that signed tokens carry more safely and
+simply. Trade-offs accepted and documented: (1) access tokens are not
+individually revocable before their 1h expiry — admin revocation works via
+`tokens_revoked_before` attestation overlays checked at auth time; (2)
+authorization codes are PKCE-bound and short-lived but not single-use; (3)
+in-memory rate limits are per-serverless-instance (porous) while the *hard*
+quotas (open attempts, daily creations) are GitHub-derived and global.
 
 ## Key decisions
 
@@ -43,12 +53,18 @@ InferFund AS ──GitHub OAuth (read:user)────────▶ GitHub
   document) for current-spec clients, plus an **RFC 7591 DCR** endpoint
   (`/oauth/register`) for 2025-era clients. CIMD documents are fetched with
   strict limits (5s timeout, 16 KiB, no redirects, `client_id` must equal the
-  URL, redirect URIs must be https or loopback http).
-- Opaque tokens (`ifu_`/`ifr_` prefixes), HMAC-SHA256 hashed at rest with
-  `INFERFUND_TOKEN_SECRET`. Access tokens 1h, refresh tokens 30d with
-  rotation; replay of a rotated refresh token revokes the successor chain.
-- Authorization codes: 5 min TTL, single-use, bound to client + redirect_uri
-  + resource + PKCE challenge.
+  URL, redirect URIs must be https or loopback http) and cached in memory for
+  5 minutes. DCR client ids are self-describing signed payloads — no
+  server-side registry.
+- Stateless signed tokens (`ifa_`/`ifr_` prefixes): HMAC-SHA256 over a JSON
+  payload {sub, login, cid, scp, res, iat, exp, nonce} with
+  `INFERFUND_TOKEN_SECRET`. Access tokens 1h, refresh tokens 30d. Refresh
+  re-issues a fresh pair; emergency global revocation = rotate the secret;
+  per-user revocation = `tokens_revoked_before` attestation checked at auth.
+- Authorization codes (`ifc_`): 5 min TTL, PKCE-bound, bound to client +
+  redirect_uri + resource; self-contained signed payloads.
+- Upstream OAuth state (`ifs_`): signed with `INFERFUND_SESSION_SECRET`,
+  10 min TTL, self-contained.
 - Scopes: `inferfund:read`, `inferfund:contribute`, `inferfund:admin`
   (admin is granted only to `INFERFUND_ADMIN_GITHUB_IDS`, never
   client-self-assigned).
@@ -124,13 +140,17 @@ referenced-by count then recency. Quarantined content is excluded by default.
 Output is `max_chars`-budgeted and every entry carries
 `trust: "untrusted_contributor_content"`.
 
-### 7. Attestations in V1
+### 7. Attestations (fully Git-native)
 
-Verification and moderation outcomes are stored as append-only attestation
-rows in Postgres and surfaced through MCP tools. Writing
-`attestations/*.json` bot PRs to `progress` is a documented follow-up
-(requires the policy validator to allow attestation-only PRs from a service
-branch pattern); the Git attempt record itself remains the immutable artifact.
+Verification and moderation outcomes are append-only
+`attestations/**/*.json` files on `progress`, written via service-created
+`attestation/<UUIDV7>` PRs (the policy validator accepts exactly that shape:
+adds-only JSON under `attestations/`). On every contribution merge, the
+webhook reads the check runs for the merged head SHA and files the
+verification attestation. Quarantine, user-disable, and token-revocation
+overlays use the same mechanism. Current state = immutable attempts +
+immutable attestations, derived at read time with a 60s tree-SHA-keyed
+in-memory cache.
 
 ### 8. Preview safety
 
@@ -146,17 +166,17 @@ src/lib/
   config.ts           env validation (Zod), preview-safety, admin IDs
   errors.ts           typed error codes (spec §76)
   ids.ts              UUIDv7, branch names, problem keys, hashing
-  db/                 Drizzle schema, client, migrations
-  auth/               tokens/PKCE, CIMD+DCR clients, authorize flow, GitHub leg
-  users/              user upsert, collaborator management
-  attempts/           manifest schema, path policy, lifecycle services
+  auth/               stateless signed tokens, PKCE, CIMD+DCR, GitHub leg
+  users/              collaborator management (GitHub is the store)
+  attempts/           manifest schema, path policy, Git-backed lifecycle
+  attestations.ts     append-only attestation overlays on progress
   problems/           FC extraction, catalog access/search
-  frontier/           evidence-ranked frontier
-  ratelimit/          DB-bucket rate limiter + central limits
-  moderation/         reports, quarantine
-  audit/              sanitized structured audit log
+  frontier/           evidence-ranked frontier (Git tree + attestations)
+  ratelimit/          in-memory buckets + GitHub-derived quotas
+  moderation/         reports (issues), quarantine (attestations)
+  audit/              sanitized structured JSON logging
   mcp/                tool registrations, trust-labeled responses, directive
 verifier/             CI-side policy validator, Lean orchestration, config
-scripts/              sync:problems, db:migrate, setup:github, reconcile,
-                      configure-rulesets
+scripts/              sync:problems, setup:github, configure:rulesets,
+                      reconcile
 ```

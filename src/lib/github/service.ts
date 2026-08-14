@@ -14,7 +14,10 @@ export interface PullRequestInfo {
   state: "open" | "closed";
   merged: boolean;
   headSha: string;
+  headBranch: string;
   baseBranch: string;
+  createdAt: string;
+  mergedAt: string | null;
 }
 
 export interface RepoFileContent {
@@ -29,11 +32,27 @@ export interface CollaboratorStatus {
   invitationId?: number;
 }
 
+export interface TreeEntry {
+  path: string;
+  sha: string;
+  size?: number;
+}
+
+export interface CheckRunSummary {
+  name: string;
+  conclusion: string | null;
+}
+
 export interface GitHubService {
   getBranchHead(branch: string): Promise<GitHubRefInfo | null>;
   branchExists(branch: string): Promise<boolean>;
   createBranch(branch: string, fromSha: string): Promise<GitHubRefInfo>;
+  deleteBranch(branch: string): Promise<void>;
   readFile(branch: string, path: string): Promise<RepoFileContent | null>;
+  readFilesAtRef(
+    ref: string,
+    paths: string[],
+  ): Promise<Map<string, string>>;
   upsertFiles(
     branch: string,
     files: GitHubFileInput[],
@@ -46,11 +65,18 @@ export interface GitHubService {
     body: string;
   }): Promise<PullRequestInfo>;
   getPullRequest(prNumber: number): Promise<PullRequestInfo | null>;
+  listOpenPullRequests(): Promise<PullRequestInfo[]>;
+  findMergedPullRequestForBranch(branch: string): Promise<PullRequestInfo | null>;
   enableAutoMerge(prNumber: number): Promise<void>;
   closePullRequest(prNumber: number): Promise<void>;
-  ensureCollaborator(
-    githubLogin: string,
-  ): Promise<CollaboratorStatus>;
+  getTreeRecursive(branch: string): Promise<{ sha: string; tree: TreeEntry[] }>;
+  getCheckRunsForRef(sha: string): Promise<CheckRunSummary[]>;
+  ensureCollaborator(githubLogin: string): Promise<CollaboratorStatus>;
   getCollaboratorStatus(githubLogin: string): Promise<CollaboratorStatus>;
-  listAttemptBranches(): Promise<string[]>;
+  listAttemptBranches(prefix: string): Promise<string[]>;
+  searchPullRequestsCreatedSince(
+    branchPrefix: string,
+    sinceIsoDate: string,
+  ): Promise<number>;
+  createIssue(title: string, body: string, labels: string[]): Promise<string | null>;
 }

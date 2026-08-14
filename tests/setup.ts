@@ -1,26 +1,19 @@
-import type { TestDatabase } from "../src/lib/db/client";
-import { createTestDatabase } from "../src/lib/db/client";
-import { migrateTestDatabase } from "../src/lib/db/migrate";
 import { FakeGitHubService } from "../src/lib/github/fake-service";
 import type { ServiceContext } from "../src/lib/attempts/service";
 
 export interface TestHarness {
-  db: TestDatabase;
   github: FakeGitHubService;
   ctx: ServiceContext;
   progressSha: string;
 }
 
-export async function makeHarness(): Promise<TestHarness> {
-  const db = await createTestDatabase();
-  await migrateTestDatabase(db);
+export function makeHarness(): TestHarness {
   const github = new FakeGitHubService();
   const progressSha = github.seedBranch("progress", {
     "README.md": "# progress\n",
     "FORMAT.md": "# format\n",
   });
   const ctx: ServiceContext = {
-    db,
     github,
     progressBranch: "progress",
     attemptBranchPrefix: "attempt",
@@ -32,24 +25,14 @@ export async function makeHarness(): Promise<TestHarness> {
     maxFilesPerAttempt: 20,
     writesEnabled: true,
   };
-  return { db, github, ctx, progressSha };
+  return { github, ctx, progressSha };
 }
 
 export const ALICE = { githubUserId: 11111111, githubLogin: "alice" };
 export const BOB = { githubUserId: 22222222, githubLogin: "bob" };
 
-export async function seedUsers(
-  h: TestHarness,
-  actors: Array<{ githubUserId: number; githubLogin: string }> = [ALICE, BOB],
-): Promise<void> {
-  const { users } = await import("../src/lib/db/schema");
-  await h.db
-    .insert(users)
-    .values(actors)
-    .onConflictDoNothing();
-}
-
 export const TEST_TOKEN_SECRET = "test-token-secret-test-token-secret-1234";
+export const TEST_SESSION_SECRET = "test-session-secret-test-session-1234";
 
 export const SAMPLE_PROBLEM = {
   problemKey: "erdos-1",

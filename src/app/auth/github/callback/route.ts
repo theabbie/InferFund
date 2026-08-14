@@ -1,4 +1,3 @@
-import { getDb } from "@/lib/db/client";
 import { getConfig } from "@/lib/config";
 import { consumeUpstreamState } from "@/lib/auth/authorize";
 import {
@@ -6,7 +5,7 @@ import {
   fetchGitHubIdentity,
 } from "@/lib/auth/github-oauth";
 import { createAuthorizationCode } from "@/lib/auth/tokens";
-import { upsertUserFromGitHub, ensureCollaboration } from "@/lib/users/service";
+import { ensureCollaboration } from "@/lib/users/service";
 import { getGitHubService } from "@/lib/github/octokit-service";
 import { audit } from "@/lib/audit/log";
 import { SuccessPage, ErrorPage } from "../pages";
@@ -38,9 +37,8 @@ export async function GET(req: Request): Promise<Response> {
     );
   }
 
-  const db = getDb();
   const config = getConfig();
-  const transaction = await consumeUpstreamState(db, state);
+  const transaction = consumeUpstreamState(state);
   if (!transaction) {
     return new Response(
       ErrorPage({
@@ -60,45 +58,43 @@ export async function GET(req: Request): Promise<Response> {
     redirectUri: `${config.INFERFUND_BASE_URL}/auth/github/callback`,
   });
   const identity = await fetchGitHubIdentity({ accessToken: ghAccessToken });
-  const user = await upsertUserFromGitHub(db, identity);
 
-  await audit(db, {
-    actorGithubUserId: user.githubUserId,
+  audit({
+    actorGithubUserId: identity.id,
     actorKind: "user",
     action: "login",
     targetType: "user",
-    targetId: String(user.githubUserId),
-    details: { login: user.githubLogin },
+    targetId: String(identity.id),
+    details: { login: identity.login },
   });
 
   let collaboration: { status: string } = { status: "none" };
-  try {
-    collaboration = await ensureCollaboration(db, getGitHubService(), {
-      githubUserId: user.githubUserId,
-      githubLogin: user.githubLogin,
-    });
-  } catch {
-    collaboration = { status: "failed" };
+  if (config.writesEnabled) {
+    try {
+      collaboration = await ensureCollaboration(getGitHubService(), {
+        githubUserId: identity.id,
+        githubLogin: identity.login,
+      });
+    } catch {
+      collaboration = { status: "failed" };
+    }
   }
 
-  const inferfundCode = await createAuthorizationCode(
-    db,
-    config.INFERFUND_TOKEN_SECRET,
-    {
-      clientId: transaction.clientId,
-      githubUserId: user.githubUserId,
-      redirectUri: transaction.clientRedirectUri,
-      scopes: transaction.scopes,
-      resource: transaction.resource,
-      codeChallenge: transaction.codeChallenge,
-      codeChallengeMethod: transaction.codeChallengeMethod,
-    },
-  );
+  const inferfundCode = createAuthorizationCode(config.INFERFUND_TOKEN_SECRET, {
+    clientId: transaction.cid ?? "",
+    githubUserId: identity.id,
+    githubLogin: identity.login,
+    redirectUri: transaction.ruri ?? "",
+    scopes: transaction.scp ?? [],
+    resource: transaction.res ?? "",
+    codeChallenge: transaction.cc ?? "",
+    codeChallengeMethod: transaction.ccm ?? "S256",
+  });
 
-  const redirect = new URL(transaction.clientRedirectUri);
+  const redirect = new URL(transaction.ruri ?? "");
   redirect.searchParams.set("code", inferfundCode);
-  if (transaction.clientState) {
-    redirect.searchParams.set("state", transaction.clientState);
+  if (transaction.cstate) {
+    redirect.searchParams.set("state", transaction.cstate);
   }
 
   const isLoopback =
@@ -113,7 +109,7 @@ export async function GET(req: Request): Promise<Response> {
   return new Response(
     SuccessPage({
       redirectUrl: redirect.toString(),
-      githubLogin: user.githubLogin,
+      githubLogin: identity.login,
       collaborationStatus: collaboration.status,
     }),
     { status: 200, headers: { "content-type": "text/html; charset=utf-8" } },

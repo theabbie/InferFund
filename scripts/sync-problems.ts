@@ -139,16 +139,6 @@ async function main(): Promise<void> {
     `Wrote ${catalog.problems.length} problems to data/problems.json`,
   );
 
-  if (process.argv.includes("--db")) {
-    const { getDb } = await import("../src/lib/db/client");
-    const { upsertCatalogIntoDb } = await import(
-      "../src/lib/problems/catalog"
-    );
-    const result = await upsertCatalogIntoDb(getDb(), catalog);
-    console.log(
-      `Upserted ${result.upserted} problems, ${result.versions} new versions into DB.`,
-    );
-  }
 }
 
 main().catch((error) => {

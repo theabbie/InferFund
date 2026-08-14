@@ -3,12 +3,14 @@ import type { Octokit } from "octokit";
 import { getConfig } from "../config";
 import { InferFundError } from "../errors";
 import type {
+  CheckRunSummary,
   CollaboratorStatus,
   GitHubFileInput,
   GitHubRefInfo,
   GitHubService,
   PullRequestInfo,
   RepoFileContent,
+  TreeEntry,
 } from "./service";
 
 function isOctokitRequestError(
@@ -91,10 +93,7 @@ export class OctokitGitHubService implements GitHubService {
           repo: this.repo,
           ref: `heads/${branch}`,
         });
-        return {
-          ref: branch,
-          sha: (res.data.object as { sha: string }).sha,
-        };
+        return { ref: branch, sha: (res.data.object as { sha: string }).sha };
       } catch (error) {
         if (isOctokitRequestError(error) && error.status === 404) return null;
         throw error;
@@ -115,10 +114,18 @@ export class OctokitGitHubService implements GitHubService {
         ref: `refs/heads/${branch}`,
         sha: fromSha,
       });
-      return {
-        ref: branch,
-        sha: (res.data.object as { sha: string }).sha,
-      };
+      return { ref: branch, sha: (res.data.object as { sha: string }).sha };
+    });
+  }
+
+  async deleteBranch(branch: string): Promise<void> {
+    const octokit = await this.client();
+    await this.wrap("deleteBranch", async () => {
+      await octokit.rest.git.deleteRef({
+        owner: this.owner,
+        repo: this.repo,
+        ref: `heads/${branch}`,
+      });
     });
   }
 
@@ -137,13 +144,55 @@ export class OctokitGitHubService implements GitHubService {
         });
         const data = res.data;
         if (Array.isArray(data) || data.type !== "file") return null;
-        const content = Buffer.from(data.content, "base64").toString("utf8");
-        return { path, content, sha: data.sha };
+        return {
+          path,
+          content: Buffer.from(data.content, "base64").toString("utf8"),
+          sha: data.sha,
+        };
       } catch (error) {
         if (isOctokitRequestError(error) && error.status === 404) return null;
         throw error;
       }
     });
+  }
+
+  async readFilesAtRef(
+    ref: string,
+    paths: string[],
+  ): Promise<Map<string, string>> {
+    const octokit = await this.client();
+    const result = new Map<string, string>();
+    await this.wrap("readFilesAtRef", async () => {
+      const chunks: string[][] = [];
+      for (let i = 0; i < paths.length; i += 10) {
+        chunks.push(paths.slice(i, i + 10));
+      }
+      for (const chunk of chunks) {
+        await Promise.all(
+          chunk.map(async (path) => {
+            try {
+              const res = await octokit.rest.repos.getContent({
+                owner: this.owner,
+                repo: this.repo,
+                path,
+                ref,
+              });
+              const data = res.data;
+              if (!Array.isArray(data) && data.type === "file") {
+                result.set(
+                  path,
+                  Buffer.from(data.content, "base64").toString("utf8"),
+                );
+              }
+            } catch (error) {
+              if (isOctokitRequestError(error) && error.status === 404) return;
+              throw error;
+            }
+          }),
+        );
+      }
+    });
+    return result;
   }
 
   async upsertFiles(
@@ -205,6 +254,28 @@ export class OctokitGitHubService implements GitHubService {
     });
   }
 
+  private mapPr(data: {
+    number: number;
+    html_url: string;
+    state: string;
+    merged_at: string | null;
+    head: { sha: string; ref: string };
+    base: { ref: string };
+    created_at: string;
+  }): PullRequestInfo {
+    return {
+      number: data.number,
+      url: data.html_url,
+      state: data.state === "open" ? "open" : "closed",
+      merged: data.merged_at !== null,
+      headSha: data.head.sha,
+      headBranch: data.head.ref,
+      baseBranch: data.base.ref,
+      createdAt: data.created_at,
+      mergedAt: data.merged_at,
+    };
+  }
+
   async createPullRequest(input: {
     head: string;
     base: string;
@@ -222,14 +293,7 @@ export class OctokitGitHubService implements GitHubService {
         body: input.body,
         maintainer_can_modify: false,
       });
-      return {
-        number: res.data.number,
-        url: res.data.html_url,
-        state: "open",
-        merged: false,
-        headSha: res.data.head.sha,
-        baseBranch: input.base,
-      };
+      return this.mapPr(res.data);
     });
   }
 
@@ -242,18 +306,49 @@ export class OctokitGitHubService implements GitHubService {
           repo: this.repo,
           pull_number: prNumber,
         });
-        return {
-          number: res.data.number,
-          url: res.data.html_url,
-          state: res.data.state === "open" ? "open" : "closed",
-          merged: res.data.merged_at !== null,
-          headSha: res.data.head.sha,
-          baseBranch: res.data.base.ref,
-        };
+        return this.mapPr(res.data);
       } catch (error) {
         if (isOctokitRequestError(error) && error.status === 404) return null;
         throw error;
       }
+    });
+  }
+
+  async listOpenPullRequests(): Promise<PullRequestInfo[]> {
+    const octokit = await this.client();
+    return this.wrap("listOpenPullRequests", async () => {
+      const all: PullRequestInfo[] = [];
+      let page = 1;
+      for (;;) {
+        const res = await octokit.rest.pulls.list({
+          owner: this.owner,
+          repo: this.repo,
+          state: "open",
+          per_page: 100,
+          page,
+        });
+        all.push(...res.data.map((d) => this.mapPr(d)));
+        if (res.data.length < 100) break;
+        page += 1;
+      }
+      return all;
+    });
+  }
+
+  async findMergedPullRequestForBranch(
+    branch: string,
+  ): Promise<PullRequestInfo | null> {
+    const octokit = await this.client();
+    return this.wrap("findMergedPullRequestForBranch", async () => {
+      const res = await octokit.rest.pulls.list({
+        owner: this.owner,
+        repo: this.repo,
+        state: "closed",
+        head: `${this.owner}:${branch}`,
+        per_page: 10,
+      });
+      const merged = res.data.find((d) => d.merged_at !== null);
+      return merged ? this.mapPr(merged) : null;
     });
   }
 
@@ -289,11 +384,58 @@ export class OctokitGitHubService implements GitHubService {
     });
   }
 
+  async getTreeRecursive(
+    branch: string,
+  ): Promise<{ sha: string; tree: TreeEntry[] }> {
+    const octokit = await this.client();
+    return this.wrap("getTreeRecursive", async () => {
+      const head = await this.getBranchHead(branch);
+      if (!head) {
+        throw new InferFundError(
+          "GITHUB_UNAVAILABLE",
+          `Branch "${branch}" does not exist.`,
+        );
+      }
+      const res = await octokit.rest.git.getTree({
+        owner: this.owner,
+        repo: this.repo,
+        tree_sha: head.sha,
+        recursive: "true",
+      });
+      return {
+        sha: head.sha,
+        tree: res.data.tree
+          .filter((t) => t.type === "blob" && t.path)
+          .map((t) => ({
+            path: t.path as string,
+            sha: t.sha as string,
+            size: t.size,
+          })),
+      };
+    });
+  }
+
+  async getCheckRunsForRef(sha: string): Promise<CheckRunSummary[]> {
+    const octokit = await this.client();
+    return this.wrap("getCheckRunsForRef", async () => {
+      const res = await octokit.rest.checks.listForRef({
+        owner: this.owner,
+        repo: this.repo,
+        ref: sha,
+        per_page: 100,
+      });
+      return res.data.check_runs.map((c) => ({
+        name: c.name,
+        conclusion: c.conclusion,
+      }));
+    });
+  }
+
   async ensureCollaborator(githubLogin: string): Promise<CollaboratorStatus> {
+    const existing = await this.getCollaboratorStatus(githubLogin);
+    if (existing.status !== "none") return existing;
     const octokit = await this.client();
     return this.wrap("ensureCollaborator", async () => {
-      const existing = await this.getCollaboratorStatus(githubLogin);
-      if (existing.status !== "none") return existing;
       try {
         const res = await octokit.rest.repos.addCollaborator({
           owner: this.owner,
@@ -303,15 +445,15 @@ export class OctokitGitHubService implements GitHubService {
         });
         if (res.status === 201 && res.data && "id" in res.data) {
           return {
-            status: "invited",
+            status: "invited" as const,
             permission: "triage",
             invitationId: Number(res.data.id),
           };
         }
-        return { status: "active", permission: "triage" };
+        return { status: "active" as const, permission: "triage" };
       } catch (error) {
         if (isOctokitRequestError(error) && error.status === 404) {
-          return { status: "none" };
+          return { status: "none" as const };
         }
         throw error;
       }
@@ -330,7 +472,7 @@ export class OctokitGitHubService implements GitHubService {
           username: githubLogin,
         });
         return {
-          status: "active",
+          status: "active" as const,
           permission: String(res.data.permission),
         };
       } catch (error) {
@@ -346,22 +488,21 @@ export class OctokitGitHubService implements GitHubService {
           );
           if (invitation) {
             return {
-              status: "invited",
+              status: "invited" as const,
               permission: invitation.permissions,
               invitationId: invitation.id,
             };
           }
-          return { status: "none" };
+          return { status: "none" as const };
         }
         throw error;
       }
     });
   }
 
-  async listAttemptBranches(): Promise<string[]> {
+  async listAttemptBranches(prefix: string): Promise<string[]> {
     const octokit = await this.client();
     return this.wrap("listAttemptBranches", async () => {
-      const config = getConfig();
       const branches: string[] = [];
       let page = 1;
       for (;;) {
@@ -372,14 +513,58 @@ export class OctokitGitHubService implements GitHubService {
           page,
         });
         for (const b of res.data) {
-          if (b.name.startsWith(`${config.INFERFUND_ATTEMPT_BRANCH_PREFIX}/`)) {
-            branches.push(b.name);
-          }
+          if (b.name.startsWith(prefix)) branches.push(b.name);
         }
         if (res.data.length < 100) break;
         page += 1;
       }
       return branches;
+    });
+  }
+
+  async searchPullRequestsCreatedSince(
+    branchPrefix: string,
+    sinceIsoDate: string,
+  ): Promise<number> {
+    const octokit = await this.client();
+    return this.wrap("searchPullRequestsCreatedSince", async () => {
+      const prs = await octokit.rest.pulls.list({
+        owner: this.owner,
+        repo: this.repo,
+        state: "all",
+        per_page: 100,
+        sort: "created",
+        direction: "desc",
+      });
+      const since = new Date(sinceIsoDate).getTime();
+      return prs.data.filter(
+        (p) =>
+          p.head.ref.startsWith(branchPrefix) &&
+          new Date(p.created_at).getTime() >= since,
+      ).length;
+    });
+  }
+
+  async createIssue(
+    title: string,
+    body: string,
+    labels: string[],
+  ): Promise<string | null> {
+    const octokit = await this.client();
+    return this.wrap("createIssue", async () => {
+      try {
+        const res = await octokit.rest.issues.create({
+          owner: this.owner,
+          repo: this.repo,
+          title,
+          body,
+          labels,
+        });
+        return res.data.html_url;
+      } catch (error) {
+        if (isOctokitRequestError(error) && error.status === 410) return null;
+        throw error;
+      }
     });
   }
 }

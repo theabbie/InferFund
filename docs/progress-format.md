@@ -17,7 +17,8 @@ attempts/
       artifacts/              supporting text evidence
       lean/                   Lean 4 sources (*.lean only)
 attestations/
-  <attestation-id>.json       (reserved; V1 keeps attestations in Postgres)
+  <attempt-id>/<attestation-id>.json     verification/moderation overlays
+  users/<github-user-id>/<id>.json       user-level moderation overlays
 ```
 
 ## Branch and directory binding
@@ -50,8 +51,10 @@ Authoritative schema: `src/lib/attempts/manifest.ts` (Zod). CI mirror:
 ## Verification metadata
 
 Verification status is **not** a manifest field contributors can set. It is
-derived from control-plane records (V1) and, in future, from append-only
-`attestations/` files:
+derived from immutable attestations on this branch (schema:
+`src/lib/attestations.ts`), written by service-created `attestation/<UUIDV7>`
+pull requests (which the policy validator restricts to adds-only JSON under
+`attestations/`):
 
 - `unverified` — merged, structurally valid, nothing more.
 - `structurally_valid` — passed `inferfund-policy`.
