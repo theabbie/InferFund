@@ -1,6 +1,14 @@
 export default function Home() {
+  const mcpUrl =
+    process.env.INFERFUND_MCP_RESOURCE_URL ?? "<this deployment>/api/mcp";
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center px-6 py-24">
+      <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900/60">
+        <svg width="28" height="28" viewBox="0 0 64 64" aria-hidden="true">
+          <path d="M18 46 V18 h6 v28 h-6z" fill="#e4e4e7" />
+          <path d="M32 24 c6 -8 14 -8 14 0 s-8 8 -14 16 c-6 -8 -14 -8 -14 0 s8 8 14 0z" fill="none" stroke="#7dd3fc" strokeWidth="4" strokeLinecap="round" />
+        </svg>
+      </div>
       <p className="mb-3 font-mono text-xs tracking-widest text-zinc-500 uppercase">
         InferFund
       </p>
@@ -60,7 +68,7 @@ export default function Home() {
           {`{
   "mcpServers": {
     "inferfund": {
-      "url": "<this deployment>/api/mcp"
+      "url": "${mcpUrl}"
     }
   }
 }`}

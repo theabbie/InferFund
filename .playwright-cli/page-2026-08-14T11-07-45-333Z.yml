@@ -1,0 +1,13 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - paragraph [ref=e3]: "404"
+    - heading "This page could not be found." [level=1] [ref=e4]
+    - paragraph [ref=e5]:
+      - text: The MCP endpoint lives at
+      - code [ref=e6]: /api/mcp
+      - text: . Everything else starts from
+      - link "the landing page" [ref=e7] [cursor=pointer]:
+        - /url: /
+      - text: .
+  - button "Open Next.js Dev Tools" [ref=e13] [cursor=pointer]:
+    - img [ref=e14]

@@ -7,15 +7,15 @@ export default function PrivacyPage() {
       <div className="mt-8 space-y-6 text-sm leading-7 text-zinc-400">
         <section>
           <h2 className="text-base font-semibold text-zinc-100">
-            What InferFund stores
+            InferFund stores nothing server-side
           </h2>
           <p className="mt-2">
-            InferFund stores the minimum control-plane data needed to operate:
-            your numeric GitHub user ID, login, avatar URL, authentication
-            timestamps, and collaborator status; OAuth client registrations and
-            hashed access/refresh tokens; attempt metadata (IDs, branches, pull
-            requests, verification results); rate-limit counters; and an audit
-            log of sensitive operations.
+            InferFund is fully stateless: there is no database. Your identity
+            (numeric GitHub user ID, login, avatar URL) is carried inside
+            signed, expiring access tokens after you authenticate with GitHub;
+            it is not persisted by the service. OAuth client registrations are
+            self-describing signed identifiers, and authorization codes are
+            short-lived signed payloads — none of it is written to a store.
           </p>
         </section>
         <section>
@@ -38,19 +38,22 @@ export default function PrivacyPage() {
           </h2>
           <ul className="mt-2 list-disc space-y-1 pl-5">
             <li>No GitHub repository-write permission is requested from you.</li>
-            <li>OAuth tokens and secrets are stored only as hashes.</li>
+            <li>Your GitHub OAuth token is used once (to read your identity)
+              and never stored.</li>
             <li>AI-agent conversations are not collected.</li>
             <li>Bearer tokens are never logged or accepted in query strings.</li>
           </ul>
         </section>
         <section>
-          <h2 className="text-base font-semibold text-zinc-100">Deletion</h2>
+          <h2 className="text-base font-semibold text-zinc-100">Moderation &amp; audit</h2>
           <p className="mt-2">
-            Merged mathematical history is append-only by design. Account
-            control-plane data (tokens, collaboration records) can be revoked
-            and erased on request; content that violates law or safety policy
-            may be quarantined or, where legally required, removed &mdash; both
-            actions are audit-logged.
+            Sensitive operations (logins, submissions, moderation actions) are
+            emitted as structured, secret-free log entries. Moderation state
+            (quarantine, restrictions) is itself public: it lives as
+            append-only attestation files on the repository&rsquo;s{" "}
+            <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs">progress</code>{" "}
+            branch. Access tokens expire within an hour and can be
+            invalidated for a user by public revocation attestations.
           </p>
         </section>
       </div>

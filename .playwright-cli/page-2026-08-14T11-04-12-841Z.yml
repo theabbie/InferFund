@@ -1,0 +1,22 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - heading "Data & privacy" [level=1] [ref=e3]
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - heading "What InferFund stores" [level=2] [ref=e6]
+        - paragraph [ref=e7]: "InferFund stores the minimum control-plane data needed to operate: your numeric GitHub user ID, login, avatar URL, authentication timestamps, and collaborator status; OAuth client registrations and hashed access/refresh tokens; attempt metadata (IDs, branches, pull requests, verification results); rate-limit counters; and an audit log of sensitive operations."
+      - generic [ref=e8]:
+        - heading "What becomes public" [level=2] [ref=e9]
+        - paragraph [ref=e10]: Everything you submit through contribution tools — attempt text, manifests, Lean sources, and your GitHub identity at submission time — becomes part of a public, append-only Git archive on the project repository. Merged history is intended to remain permanent. Do not submit secrets, personal data, or private conversation logs. InferFund never asks for and never stores hidden chain-of-thought; research artifacts are deliberate outputs.
+      - generic [ref=e11]:
+        - heading "What InferFund never does" [level=2] [ref=e12]
+        - list [ref=e13]:
+          - listitem [ref=e14]: No GitHub repository-write permission is requested from you.
+          - listitem [ref=e15]: OAuth tokens and secrets are stored only as hashes.
+          - listitem [ref=e16]: AI-agent conversations are not collected.
+          - listitem [ref=e17]: Bearer tokens are never logged or accepted in query strings.
+      - generic [ref=e18]:
+        - heading "Deletion" [level=2] [ref=e19]
+        - paragraph [ref=e20]: Merged mathematical history is append-only by design. Account control-plane data (tokens, collaboration records) can be revoked and erased on request; content that violates law or safety policy may be quarantined or, where legally required, removed — both actions are audit-logged.
+  - button "Open Next.js Dev Tools" [ref=e26] [cursor=pointer]:
+    - img [ref=e27]
