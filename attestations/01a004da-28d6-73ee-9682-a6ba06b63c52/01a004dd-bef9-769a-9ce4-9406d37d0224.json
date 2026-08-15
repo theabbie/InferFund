@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "attestation_id": "01a004dd-bef9-769a-9ce4-9406d37d0224",
+  "created_at": "2026-08-15T10:00:36.345Z",
+  "type": "lean_verified",
+  "attempt_id": "01a004da-28d6-73ee-9682-a6ba06b63c52",
+  "actor_kind": "system",
+  "verifier": {
+    "source_sha": "f2cbc10e8bfe737a3736416c28ff5b6e2e0db1c2"
+  },
+  "payload": {
+    "policy_check": "success",
+    "verification_check": "success",
+    "merge_commit": "428720c7bdac8f7df05adbbd86d3c83cf48dbd57",
+    "note": "Lean verification passed for declared theorems."
+  }
+}
