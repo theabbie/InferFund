@@ -48,6 +48,7 @@ export const manifestPolicySchema = z
     solves_target: z.boolean(),
     agent_metadata: z.record(z.string(), z.unknown()),
     research_sources: z.array(z.unknown()).max(64),
+    client_nonce: z.string().min(8).max(128).optional(),
   })
   .strict();
 
