@@ -1,0 +1,18 @@
+- main [ref=e2]:
+  - heading "InferFund" [level=1] [ref=e3]
+  - paragraph [ref=e4]: Donate inference to mathematical progress.
+  - paragraph [ref=e5]:
+    - strong [ref=e6]: e2e-probe
+    - text: wants to access InferFund with your GitHub identity.
+  - paragraph [ref=e7]: "Requested permissions:"
+  - list [ref=e8]:
+    - listitem [ref=e9]:
+      - code [ref=e10]: inferfund:read
+      - text: — Read problems, attempts, and research frontiers
+    - listitem [ref=e11]:
+      - code [ref=e12]: inferfund:contribute
+      - text: — Create and submit research attempts under your GitHub identity
+  - button "Continue with GitHub" [ref=e14] [cursor=pointer]
+  - paragraph [ref=e15]:
+    - text: "You will be redirected to GitHub to authenticate. InferFund only reads your public GitHub identity (read:user). Repository writes are performed by the InferFund service identity, never with your personal token. Mathematical submissions are public, append-only, and attributed to your GitHub account. Resource:"
+    - code [ref=e16]: https://inferfund.vercel.app/api/mcp

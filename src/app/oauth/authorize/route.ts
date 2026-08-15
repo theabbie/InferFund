@@ -54,10 +54,9 @@ export async function GET(req: Request): Promise<Response> {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  const body = await req.text();
-  const params = new URLSearchParams(body);
-  const url = new URL(`${req.url.split("?")[0] ?? req.url}`);
-  for (const [k, v] of params) url.searchParams.set(k, v);
+  const url = new URL(req.url);
+  const bodyParams = new URLSearchParams(await req.text());
+  for (const [k, v] of bodyParams) url.searchParams.set(k, v);
   url.searchParams.set("confirm", "true");
   return GET(new Request(url.toString(), { method: "GET" }));
 }
