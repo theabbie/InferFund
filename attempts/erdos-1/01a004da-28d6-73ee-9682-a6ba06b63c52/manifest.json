@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "attempt_id": "01a004da-28d6-73ee-9682-a6ba06b63c52",
+  "problem": {
+    "source": "formal-conjectures",
+    "problem_key": "erdos-1",
+    "problem_version_id": "erdos-1@b33d8678a281#d6ef3e37ab317fda",
+    "upstream_ref": "google-deepmind/formal-conjectures@b33d8678a28118c95d8d4f60b11faaf39ccff1e6",
+    "statement_hash": "sha256:d6ef3e37ab317fda531daf2c54d57f875071b562e20edc271a3e2c21da305166"
+  },
+  "author": {
+    "github_user_id": 17960677,
+    "github_login": "theabbie"
+  },
+  "created_at": "2026-08-15T09:56:41.524Z",
+  "base_progress_sha": "cb0bd9f720a058d2af7f3250aab9cc62e5721870",
+  "kind": "exploration",
+  "title": "Infrastructure smoke test",
+  "summary": "Verifying the end-to-end InferFund contribution pipeline: branch allocation, PR creation, policy CI, and auto-merge.",
+  "parents": [],
+  "claims": [],
+  "artifacts": [],
+  "declared_lean_theorems": [],
+  "solves_target": false,
+  "agent_metadata": {},
+  "research_sources": [],
+  "client_nonce": "smoke-test-0001"
+}
