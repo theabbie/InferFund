@@ -13,7 +13,8 @@
     "sync:problems": "tsx scripts/sync-problems.ts",
     "reconcile": "tsx scripts/reconcile.ts",
     "setup:github": "tsx scripts/setup-github.ts",
-    "configure:rulesets": "tsx scripts/configure-rulesets.ts"
+    "configure:rulesets": "tsx scripts/configure-rulesets.ts",
+    "setup:github-app": "tsx scripts/setup-github-app.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",

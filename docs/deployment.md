@@ -5,21 +5,17 @@ the system is stateless (Git + GitHub metadata + signed tokens).
 
 ## One-time external setup (owner actions)
 
-1. **GitHub OAuth App** (user identity):
-   https://github.com/settings/developers → New OAuth App
-   - Homepage: `https://<your-domain>`
-   - Authorization callback URL: `https://<your-domain>/auth/github/callback`
-   - → `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`
-2. **GitHub App** (service identity):
-   https://github.com/settings/apps → New GitHub App
-   - Permissions: Contents (RW), Pull requests (RW), Checks (RW),
-     Metadata (R). No organization permissions are required.
-   - Events: `pull_request` (required for merge bookkeeping).
-   - Webhook URL: `https://<your-domain>/api/github/webhook`
-     (set a secret → `GITHUB_APP_WEBHOOK_SECRET`).
-   - Install the App on the repository → `GITHUB_APP_ID`,
-     `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`
-     (on Vercel, paste the PEM with real newlines; the app normalizes `\n`).
+1. **GitHub App** (service identity AND user sign-in — one registration):
+   run `npm run setup:github-app` locally. It drives GitHub's App-manifest
+   flow, receives the credentials on a localhost callback, captures the
+   installation ID, and writes `GITHUB_APP_ID`, `GITHUB_APP_CLIENT_ID`,
+   `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY`,
+   `GITHUB_APP_WEBHOOK_SECRET`, `GITHUB_APP_INSTALLATION_ID` to `.env`.
+   (Manual alternative: create the App at https://github.com/settings/apps
+   with Contents RW, Pull requests RW, Checks RW, Issues RW, Metadata R,
+   `pull_request` events, webhook `https://<your-domain>/api/github/webhook`;
+   optionally also create a classic OAuth App for the login leg instead of
+   using the App's client credentials.)
 3. **Rulesets**: `GITHUB_REPO_OWNER=… GITHUB_REPO_NAME=… GITHUB_APP_ID=…
    npm run configure:rulesets` (idempotent).
 4. **Admins**: `INFERFUND_ADMIN_GITHUB_IDS=<numeric id>,<…>`.

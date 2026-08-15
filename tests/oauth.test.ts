@@ -272,8 +272,16 @@ describe("OAuth client registration (DCR + CIMD)", () => {
       redirect_uris: ["https://client.example.com/cb"],
     });
     if (!result.ok) throw new Error("unreachable");
-    const forged = result.client.clientId.replace(/.$/, "A");
+    const last = result.client.clientId.slice(-1);
+    const forged =
+      result.client.clientId.slice(0, -1) + (last === "A" ? "B" : "A");
     expect(await resolveClient(forged)).toBeNull();
+    const body = result.client.clientId.slice(4);
+    const dot = body.lastIndexOf(".");
+    const mutatedBody =
+      body.slice(0, dot).replace(/.$/, (c) => (c === "A" ? "B" : "A")) +
+      body.slice(dot);
+    expect(await resolveClient(`ifd_${mutatedBody}`)).toBeNull();
   });
 
   it("resolves a CIMD client from its metadata URL", async () => {

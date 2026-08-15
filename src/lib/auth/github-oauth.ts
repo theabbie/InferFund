@@ -14,12 +14,15 @@ export function githubAuthorizeUrl(input: {
   clientId: string;
   redirectUri: string;
   state: string;
+  scope?: string;
 }): string {
   const url = new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", input.clientId);
   url.searchParams.set("redirect_uri", input.redirectUri);
   url.searchParams.set("state", input.state);
-  url.searchParams.set("scope", "read:user");
+  if (input.scope) {
+    url.searchParams.set("scope", input.scope);
+  }
   return url.toString();
 }
 

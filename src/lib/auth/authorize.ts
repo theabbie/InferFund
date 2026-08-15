@@ -117,16 +117,39 @@ export async function validateAuthorizeRequest(
   };
 }
 
+export function oauthClientCredentials(): {
+  clientId: string;
+  clientSecret: string;
+  scope?: string;
+} {
+  const config = getConfig();
+  if (config.GITHUB_OAUTH_CLIENT_ID && config.GITHUB_OAUTH_CLIENT_SECRET) {
+    return {
+      clientId: config.GITHUB_OAUTH_CLIENT_ID,
+      clientSecret: config.GITHUB_OAUTH_CLIENT_SECRET,
+      scope: "read:user",
+    };
+  }
+  if (config.GITHUB_APP_CLIENT_ID && config.GITHUB_APP_CLIENT_SECRET) {
+    return {
+      clientId: config.GITHUB_APP_CLIENT_ID,
+      clientSecret: config.GITHUB_APP_CLIENT_SECRET,
+      scope: undefined,
+    };
+  }
+  throw new Error(
+    "GitHub user-login credentials are not configured. Set either " +
+      "GITHUB_OAUTH_CLIENT_ID/GITHUB_OAUTH_CLIENT_SECRET (OAuth App) or " +
+      "GITHUB_APP_CLIENT_ID/GITHUB_APP_CLIENT_SECRET (GitHub App user OAuth).",
+  );
+}
+
 export function beginGitHubAuthorization(
   params: AuthorizeRequestParams,
   validated: Extract<AuthorizeValidation, { ok: true }>,
 ): { upstreamState: string; githubUrl: string } {
   const config = getConfig();
-  if (!config.GITHUB_OAUTH_CLIENT_ID || !config.GITHUB_OAUTH_CLIENT_SECRET) {
-    throw new Error(
-      "GITHUB_OAUTH_CLIENT_ID/GITHUB_OAUTH_CLIENT_SECRET are not configured.",
-    );
-  }
+  const upstream = oauthClientCredentials();
   const now = nowSeconds();
   const upstreamState = issueSignedPayload(config.INFERFUND_SESSION_SECRET, {
     v: 1,
@@ -143,9 +166,10 @@ export function beginGitHubAuthorization(
   });
   const callbackUrl = `${config.INFERFUND_BASE_URL}/auth/github/callback`;
   const githubUrl = githubAuthorizeUrl({
-    clientId: config.GITHUB_OAUTH_CLIENT_ID,
+    clientId: upstream.clientId,
     redirectUri: callbackUrl,
     state: upstreamState,
+    scope: upstream.scope,
   });
   return { upstreamState, githubUrl };
 }

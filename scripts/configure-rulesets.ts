@@ -36,15 +36,18 @@ function ghJson<T>(args: string[], input?: string): T {
 }
 
 function desiredRulesets(): Ruleset[] {
-  const appBypass = appId
-    ? [
-        {
-          actor_id: Number(appId),
-          actor_type: "Integration",
-          bypass_mode: "always",
-        },
-      ]
-    : [];
+  const appBypass = [
+    ...(appId
+      ? [
+          {
+            actor_id: Number(appId),
+            actor_type: "Integration",
+            bypass_mode: "always",
+          },
+        ]
+      : []),
+    { actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" },
+  ];
   return [
     {
       name: "inferfund-main",

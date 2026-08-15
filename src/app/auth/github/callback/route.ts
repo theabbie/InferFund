@@ -1,5 +1,5 @@
 import { getConfig } from "@/lib/config";
-import { consumeUpstreamState } from "@/lib/auth/authorize";
+import { consumeUpstreamState, oauthClientCredentials } from "@/lib/auth/authorize";
 import {
   exchangeGitHubCode,
   fetchGitHubIdentity,
@@ -51,9 +51,10 @@ export async function GET(req: Request): Promise<Response> {
     );
   }
 
+  const upstream = oauthClientCredentials();
   const ghAccessToken = await exchangeGitHubCode({
-    clientId: config.GITHUB_OAUTH_CLIENT_ID ?? "",
-    clientSecret: config.GITHUB_OAUTH_CLIENT_SECRET ?? "",
+    clientId: upstream.clientId,
+    clientSecret: upstream.clientSecret,
     code,
     redirectUri: `${config.INFERFUND_BASE_URL}/auth/github/callback`,
   });

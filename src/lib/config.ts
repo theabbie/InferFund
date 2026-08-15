@@ -15,6 +15,8 @@ const envSchema = z.object({
   GITHUB_APP_INSTALLATION_ID: z.string().min(1).optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().min(1).optional(),
   GITHUB_APP_WEBHOOK_SECRET: z.string().min(1).optional(),
+  GITHUB_APP_CLIENT_ID: z.string().min(1).optional(),
+  GITHUB_APP_CLIENT_SECRET: z.string().min(1).optional(),
   GITHUB_DEV_ADMIN_TOKEN: z.string().min(1).optional(),
   INFERFUND_ADMIN_GITHUB_IDS: z.string().optional(),
   INFERFUND_PROGRESS_BRANCH: z.string().default("progress"),
