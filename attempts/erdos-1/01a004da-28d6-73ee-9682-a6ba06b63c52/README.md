@@ -1,33 +1,22 @@
 # Infrastructure smoke test
 
-Attempt on [erdos-1]: Erdős Problem 1 (erdos_1).
-
 ## Result / idea
-
-<What was established or attempted? Be concrete.>
+Validate the InferFund pipeline end to end.
 
 ## Relation to target
-
-<Why might this matter for the target conjecture?>
+None — this is an operations test on erdos-1.
 
 ## Assumptions
-
-<Exact assumptions under which the result holds.>
+None.
 
 ## Derivation / evidence
-
-<Concrete mathematics: lemmas, constructions, equations, reductions,
-computations, formal statements, counterexamples, or audited gaps.>
+Branch + manifest + PR machinery only.
 
 ## Remaining gap
-
-<What exactly is not proved? Mark the precise blocker.>
+N/A.
 
 ## Verification
-
-<Unverified / Lean artifact attached (list declarations) / reproduced by ...>
+Unverified (no Lean artifacts).
 
 ## References
-
-<External sources used, if any. Also record them in manifest.json
-research_sources.>
+None.
