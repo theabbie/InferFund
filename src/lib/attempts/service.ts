@@ -32,6 +32,7 @@ export interface ServiceContext {
   maxAttemptBytes: number;
   maxFilesPerAttempt: number;
   writesEnabled: boolean;
+  serviceCanWrite: boolean;
 }
 
 export interface Actor {
@@ -85,6 +86,36 @@ function assertWritesEnabled(ctx: ServiceContext): void {
         "environment without INFERFUND_ENABLE_WRITES=true).",
     );
   }
+}
+
+export interface DirectFlowInstructions {
+  mode: "direct";
+  clone_url_note: string;
+  commands: string[];
+}
+
+export function directFlowInstructions(input: {
+  repoOwner: string;
+  repoName: string;
+  branch: string;
+  baseSha: string;
+  progressBranch: string;
+}): DirectFlowInstructions {
+  const repo = `${input.repoOwner}/${input.repoName}`;
+  return {
+    mode: "direct",
+    clone_url_note:
+      "Use the repository's usual clone URL after accepting the collaborator invitation.",
+    commands: [
+      `git clone git@github.com:${repo}.git`,
+      `cd ${input.repoName}`,
+      `git checkout -b ${input.branch} ${input.baseSha}`,
+      "mkdir -p <attempt_dir> && add manifest.json + README.md + your work",
+      `git add -A && git commit -m "attempt: <title>"`,
+      `git push -u origin ${input.branch}`,
+      `gh pr create --repo ${repo} --base ${input.progressBranch} --head ${input.branch} --title "<kind>: <title>" --body "InferFund attempt"`,
+    ],
+  };
 }
 
 export async function locateAttemptBranch(
@@ -271,6 +302,10 @@ export interface CreateAttemptResult {
   attempt_dir: string;
   status: string;
   idempotent_replay?: boolean;
+  mode?: "service" | "direct";
+  manifest_json?: string;
+  readme_md?: string;
+  direct_flow?: DirectFlowInstructions;
 }
 
 export async function createAttempt(
@@ -374,8 +409,6 @@ export async function createAttempt(
     );
   }
 
-  await ctx.github.createBranch(branch, progressHead.sha);
-
   const dir = attemptDirectory(input.problem.problemKey, attemptId);
   const now = new Date();
   const manifest: AttemptManifest = {
@@ -411,6 +444,36 @@ export async function createAttempt(
     problemKey: input.problem.problemKey,
     problemTitle: input.problem.title,
   });
+
+  if (!ctx.serviceCanWrite) {
+    audit({
+      actorGithubUserId: actor.githubUserId,
+      actorKind: "user",
+      action: "attempt_allocated_direct",
+      targetType: "attempt",
+      targetId: attemptId,
+      details: { branch, problem: input.problem.problemKey },
+    });
+    return {
+      attempt_id: attemptId,
+      branch,
+      base_progress_sha: progressHead.sha,
+      attempt_dir: dir,
+      status: "pending",
+      mode: "direct",
+      manifest_json: JSON.stringify(manifest, null, 2) + "\n",
+      readme_md: readme,
+      direct_flow: directFlowInstructions({
+        repoOwner: process.env.GITHUB_REPO_OWNER ?? "",
+        repoName: process.env.GITHUB_REPO_NAME ?? "",
+        branch,
+        baseSha: progressHead.sha,
+        progressBranch: ctx.progressBranch,
+      }),
+    };
+  }
+
+  await ctx.github.createBranch(branch, progressHead.sha);
 
   try {
     await ctx.github.upsertFiles(
@@ -451,6 +514,7 @@ export async function createAttempt(
     base_progress_sha: progressHead.sha,
     attempt_dir: dir,
     status: "pending",
+    mode: "service",
   };
 }
 
@@ -462,11 +526,21 @@ export interface UpdateAttemptInput {
   leanFiles?: Array<{ name: string; content: string }>;
 }
 
+export type UpdateAttemptResult =
+  | { mode: "service"; attempt_id: string; commit_sha: string; files: string[] }
+  | {
+      mode: "direct";
+      attempt_id: string;
+      branch: string;
+      note: string;
+      direct_flow: DirectFlowInstructions;
+    };
+
 export async function updateAttempt(
   ctx: ServiceContext,
   actor: Actor,
   input: UpdateAttemptInput,
-): Promise<{ attempt_id: string; commit_sha: string; files: string[] }> {
+): Promise<UpdateAttemptResult> {
   assertWritesEnabled(ctx);
   const branch = await locateAttemptBranch(ctx, input.attemptId);
   if (!branch) {
@@ -502,6 +576,27 @@ export async function updateAttempt(
     );
   }
   consumeRateLimit(`u${actor.githubUserId}`, RATE_LIMITS.attemptUpdatePerHour);
+
+  if (!ctx.serviceCanWrite) {
+    return {
+      mode: "direct",
+      attempt_id: record.attemptId,
+      branch,
+      note:
+        "This deployment lets you push directly. Edit files inside the " +
+        "attempt directory (manifest.json must stay schema-valid; keep " +
+        "author and base_progress_sha unchanged), commit, and push to the " +
+        "attempt branch. Only additions inside your attempt directory will " +
+        "pass CI policy.",
+      direct_flow: directFlowInstructions({
+        repoOwner: process.env.GITHUB_REPO_OWNER ?? "",
+        repoName: process.env.GITHUB_REPO_NAME ?? "",
+        branch,
+        baseSha: record.baseProgressSha,
+        progressBranch: ctx.progressBranch,
+      }),
+    };
+  }
 
   const dir = attemptDirectory(record.problemKey, record.attemptId);
   const manifest = record.manifest;
@@ -613,6 +708,7 @@ export async function updateAttempt(
   });
 
   return {
+    mode: "service",
     attempt_id: record.attemptId,
     commit_sha: commitSha,
     files: files.map((f) => f.path),
@@ -621,9 +717,11 @@ export async function updateAttempt(
 
 export interface SubmitAttemptResult {
   attempt_id: string;
-  pr_number: number;
-  pr_url: string;
+  pr_number?: number;
+  pr_url?: string;
   status: string;
+  mode?: "service" | "direct";
+  direct_flow?: DirectFlowInstructions & { pr_create_command: string };
 }
 
 export async function submitAttempt(
@@ -678,6 +776,27 @@ export async function submitAttempt(
     );
   }
 
+  if (!ctx.serviceCanWrite) {
+    const owner = process.env.GITHUB_REPO_OWNER ?? "";
+    const repoName = process.env.GITHUB_REPO_NAME ?? "";
+    const base = directFlowInstructions({
+      repoOwner: owner,
+      repoName,
+      branch,
+      baseSha: record.baseProgressSha,
+      progressBranch: ctx.progressBranch,
+    });
+    return {
+      attempt_id: record.attemptId,
+      status: "awaiting_user_pr",
+      mode: "direct",
+      direct_flow: {
+        ...base,
+        pr_create_command: `gh pr create --repo ${owner}/${repoName} --base ${ctx.progressBranch} --head ${branch} --title "[${record.problemKey}] ${manifest.kind}: ${manifest.title}" --body "InferFund attempt ${record.attemptId}"`,
+      },
+    };
+  }
+
   const pr = await ctx.github.createPullRequest({
     head: branch,
     base: ctx.progressBranch,
@@ -725,6 +844,7 @@ export async function submitAttempt(
     pr_number: pr.number,
     pr_url: pr.url,
     status: "submitted",
+    mode: "service",
   };
 }
 

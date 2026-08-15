@@ -64,6 +64,8 @@ function makeInput(
     expectedAttemptId: manifest.attempt_id,
     expectedAuthorGithubUserId: 11111111,
     expectedBaseProgressSha: "a".repeat(40),
+    prAuthorGithubId: 11111111,
+    prAuthorIsBot: false,
     maxFilesPerAttempt: 20,
     maxAttemptBytes: 1024 * 1024,
     knownParentAttemptIds: [],
@@ -196,6 +198,23 @@ describe("append-only PR policy", () => {
     const result = validatePullRequestPolicy(makeInput(manifest, []));
     expect(result.ok).toBe(false);
     expect(result.violations.join("\n")).toMatch(/not a known merged attempt/);
+  });
+
+  it("rejects PRs whose author is not the branch owner", () => {
+    const manifest = makeManifest();
+    const result = validatePullRequestPolicy(
+      makeInput(manifest, [], { prAuthorGithubId: 22222222 }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.violations.join("\n")).toMatch(/PR author does not match/);
+  });
+
+  it("allows bot-authored PRs (service-mediated flow) with coherent branch+manifest", () => {
+    const manifest = makeManifest();
+    const result = validatePullRequestPolicy(
+      makeInput(manifest, [], { prAuthorGithubId: 0, prAuthorIsBot: true }),
+    );
+    expect(result.ok).toBe(true);
   });
 
   it("rejects secret-looking content", () => {

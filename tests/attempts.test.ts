@@ -60,6 +60,7 @@ describe("attempt lifecycle (Git-backed)", () => {
       attemptId: created.attempt_id,
       readmeBody: "# Auxiliary bound\n\nWe establish...",
     });
+    if (updated.mode !== "service") throw new Error("expected service mode");
     expect(updated.files).toContain(
       `attempts/erdos-1/${created.attempt_id}/README.md`,
     );
@@ -174,6 +175,7 @@ describe("attempt lifecycle (Git-backed)", () => {
       attemptId: created.attempt_id,
     });
     expect(submitted.pr_url).toContain("/pull/");
+    if (submitted.pr_number === undefined) throw new Error("expected pr");
     const pr = await h.github.getPullRequest(submitted.pr_number);
     expect(pr?.baseBranch).toBe("progress");
     expect(pr?.headBranch).toBe(created.branch);
@@ -266,10 +268,60 @@ describe("attempt lifecycle (Git-backed)", () => {
     });
     record = await findAttemptById(h.ctx, created.attempt_id);
     expect(record?.status).toBe("submitted");
+    if (submitted.pr_number === undefined) throw new Error("expected pr");
     h.github.mergePr(submitted.pr_number);
     record = await findAttemptById(h.ctx, created.attempt_id);
     expect(record?.status).toBe("merged");
     expect(record?.branchName).toBe(created.branch);
+  });
+
+  it("direct mode (no service identity): returns branch + scaffold + git instructions", async () => {
+    const h = makeHarness();
+    h.ctx.serviceCanWrite = false;
+    const created = await createAttempt(h.ctx, ALICE, {
+      problem: SAMPLE_PROBLEM,
+      problemVersionId: VERSION_ID,
+      kind: "lemma",
+      title: "Direct flow attempt",
+      summary: "Prepared locally by the user.",
+    });
+    expect(created.mode).toBe("direct");
+    expect(created.branch).toMatch(/^attempt\/u11111111\/erdos-1\//);
+    expect(created.manifest_json).toBeDefined();
+    const manifest = parseManifest(JSON.parse(created.manifest_json!));
+    expect(manifest.author.github_user_id).toBe(ALICE.githubUserId);
+    expect(created.direct_flow?.commands.join("\n")).toContain(
+      "gh pr create",
+    );
+    expect(await h.github.branchExists(created.branch)).toBe(false);
+  });
+
+  it("direct mode submit returns a PR creation command once the branch exists", async () => {
+    const h = makeHarness();
+    h.ctx.serviceCanWrite = false;
+    const created = await createAttempt(h.ctx, ALICE, {
+      problem: SAMPLE_PROBLEM,
+      problemVersionId: VERSION_ID,
+      kind: "lemma",
+      title: "Direct submit",
+      summary: "A real summary of the work done.",
+    });
+    const dir = created.attempt_dir;
+    const files: Record<string, string> = {
+      "README.md": "# progress\n",
+      "FORMAT.md": "# format\n",
+      [`${dir}/manifest.json`]: created.manifest_json!,
+      [`${dir}/README.md`]: created.readme_md!,
+    };
+    h.github.seedBranch(created.branch, files);
+    const submitted = await submitAttempt(h.ctx, ALICE, {
+      attemptId: created.attempt_id,
+    });
+    expect(submitted.mode).toBe("direct");
+    expect(submitted.status).toBe("awaiting_user_pr");
+    expect(submitted.direct_flow?.pr_create_command).toContain(
+      `--base progress --head ${created.branch}`,
+    );
   });
 
   it("merged attempts are immutable through update_attempt", async () => {
@@ -284,6 +336,7 @@ describe("attempt lifecycle (Git-backed)", () => {
     const submitted = await submitAttempt(h.ctx, ALICE, {
       attemptId: created.attempt_id,
     });
+    if (submitted.pr_number === undefined) throw new Error("expected pr");
     h.github.mergePr(submitted.pr_number);
     await h.github.deleteBranch(created.branch);
     await expect(

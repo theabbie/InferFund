@@ -61,12 +61,8 @@ export class OctokitGitHubService implements GitHubService {
       const { Octokit: DevOctokit } = await import("octokit");
       return new DevOctokit({ auth: config.GITHUB_DEV_ADMIN_TOKEN });
     }
-    throw new InferFundError(
-      "GITHUB_UNAVAILABLE",
-      "GitHub service identity is not configured. Provide GITHUB_APP_ID, " +
-        "GITHUB_APP_INSTALLATION_ID and GITHUB_APP_PRIVATE_KEY.",
-      { retryable: false },
-    );
+    const { Octokit: AnonOctokit } = await import("octokit");
+    return new AnonOctokit();
   }
 
   private async wrap<T>(operation: string, fn: () => Promise<T>): Promise<T> {
@@ -441,12 +437,12 @@ export class OctokitGitHubService implements GitHubService {
           owner: this.owner,
           repo: this.repo,
           username: githubLogin,
-          permission: "triage",
+          permission: "write",
         });
         if (res.status === 201 && res.data && "id" in res.data) {
           return {
             status: "invited" as const,
-            permission: "triage",
+            permission: "write",
             invitationId: Number(res.data.id),
           };
         }

@@ -28,13 +28,16 @@ export function SuccessPage(input: {
 }): string {
   const collaborationNote =
     input.collaborationStatus === "invited"
-      ? "A GitHub collaborator invitation has been sent to your account. " +
-        "Accepting it lets you inspect your attempt branches, but it is not " +
-        "required: all writes go through InferFund."
+      ? "A collaborator invitation has been sent to your GitHub account. " +
+        "Accept it to clone the repository, push your own attempt branches " +
+        "(attempt/u<your-id>/<problem>/<id>), and open pull requests " +
+        "targeting the progress branch."
       : input.collaborationStatus === "active"
-        ? "Your GitHub account is linked to the InferFund repository with " +
-          "read-level access."
-        : "Collaborator setup is pending; you can already use every InferFund tool.";
+        ? "Your GitHub account is a repository collaborator: you can push " +
+          "your own attempt branches and open pull requests targeting " +
+          "progress."
+        : "Collaborator setup is pending (the service identity is not " +
+          "configured for invitations yet); read-only tools already work.";
   return shell(
     "Connected",
     `<div class="ok">✓</div>

@@ -24,6 +24,7 @@ export function makeHarness(): TestHarness {
     maxAttemptBytes: 1024 * 1024,
     maxFilesPerAttempt: 20,
     writesEnabled: true,
+    serviceCanWrite: true,
   };
   return { github, ctx, progressSha };
 }

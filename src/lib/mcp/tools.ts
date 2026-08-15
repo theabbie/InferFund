@@ -62,6 +62,7 @@ export function buildServiceContext(toolCtx: ToolContext): ServiceContext {
     maxAttemptBytes: config.INFERFUND_MAX_ATTEMPT_BYTES,
     maxFilesPerAttempt: config.INFERFUND_MAX_FILES_PER_ATTEMPT,
     writesEnabled: config.writesEnabled,
+    serviceCanWrite: config.serviceCanWrite,
   };
 }
 
@@ -804,7 +805,7 @@ export async function toolReviewAttempt(
       branch: created.branch,
       target_attempt_id: target.attemptId,
       review_type: input.review_type,
-      commit_sha: updated.commit_sha,
+      update: updated,
       next_steps:
         "Call submit_attempt on the review attempt to make it part of the " +
         "append-only record.",

@@ -77,6 +77,7 @@ beforeAll(async () => {
   process.env.GITHUB_REPO_OWNER = "fake";
   process.env.GITHUB_REPO_NAME = "repo";
   process.env.INFERFUND_ENABLE_WRITES = "true";
+  process.env.GITHUB_DEV_ADMIN_TOKEN = "fake-dev-token";
   resetConfigCacheForTests();
   resetRateLimitsForTests();
 

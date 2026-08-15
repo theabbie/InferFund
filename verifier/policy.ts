@@ -71,6 +71,8 @@ export interface PolicyInput {
   expectedAttemptId: string;
   expectedAuthorGithubUserId: number;
   expectedBaseProgressSha: string;
+  prAuthorGithubId: number;
+  prAuthorIsBot: boolean;
   maxFilesPerAttempt: number;
   maxAttemptBytes: number;
   knownParentAttemptIds: string[];
@@ -198,6 +200,15 @@ export function validatePullRequestPolicy(input: PolicyInput): PolicyResult {
     }
     if (branchMatch[3] !== input.expectedAttemptId) {
       violations.push("Head branch attempt ID does not match the attempt.");
+    }
+    if (
+      !input.prAuthorIsBot &&
+      input.prAuthorGithubId !== Number(branchMatch[1])
+    ) {
+      violations.push(
+        "PR author does not match the attempt branch owner (branch u<ID> " +
+          "must equal the PR author's numeric GitHub ID).",
+      );
     }
   }
 

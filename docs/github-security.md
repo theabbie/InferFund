@@ -11,12 +11,42 @@
 
 ## Actors
 
-- **Contributors**: authenticate via GitHub OAuth (`read:user` only). They may
-  be added as *triage* collaborators for UX; this grants no write ability and
-  is not required for InferFund operations. They never push anywhere.
-- **InferFund GitHub App** (service identity): the only Git-level writer of
-  `attempt/**` and the creator of PRs targeting `progress`.
+- **Contributors**: authenticate via GitHub OAuth (identity only; the login
+  token never gets repo permissions). They are added as **write**
+  collaborators so they can push their own `attempt/**` branches and open
+  PRs to `progress` — normal git flow. Merge-time enforcement (below) makes
+  this safe.
+- **InferFund GitHub App** (service identity, optional but recommended):
+  sends collaborator invitations, performs MCP service-mode writes, and
+  files attestation PRs.
 - **GITHUB_TOKEN in Actions**: scoped per-job (see workflow file).
+
+## Enforcement layers for contributor pushes
+
+1. `main`: deletion + non-fast-forward blocked; only admins push.
+2. `progress`: deletion + non-fast-forward + PR required + required checks
+   (`inferfund-policy`, `inferfund-verification`). Verified empirically: even
+   the owner's direct push is rejected with "Changes must be made through a
+   pull request".
+3. `attempt/**`: deletion + non-fast-forward blocked (no history rewrite or
+   removal of pending work). Creation/update allowed so collaborators can
+   push — merges are gated by CI:
+4. CI policy binds three identities on every contribution PR: the PR author's
+   numeric GitHub ID, the branch's embedded `u<ID>`, and the manifest's
+   `author.github_user_id`. A user can therefore never merge work into
+   `progress` under anyone else's identity, and never outside their own
+   attempt directory.
+5. Branch namespace ruleset: non-admin collaborators can only create
+   `attempt/**` branches (creation of arbitrary branches is blocked).
+   Repository admins and the App bypass. Empirical note: GitHub does not
+   bind the repo *owner* (admin) to every repo-level ruleset rule, so admin
+   actions are the trusted escape hatch — treat the admin account as
+   privileged infrastructure.
+
+Residual risk (documented, accepted): a malicious collaborator could append
+commits to another user's *pending* branch (never rewrite it — ff-only — and
+never merge it as their own: the CI author binding fails). Such events are
+audit-visible and the offending account can be disabled and quarantined.
 
 ## Rulesets (applied by `scripts/configure-rulesets.ts`)
 

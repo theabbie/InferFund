@@ -47,6 +47,7 @@ async function seedMerged(h: Harness): Promise<string> {
   const submitted = await submitAttempt(h.ctx, ALICE, {
     attemptId: created.attempt_id,
   });
+  if (submitted.pr_number === undefined) throw new Error("expected pr");
   h.github.mergePr(submitted.pr_number);
   clearFrontierCacheForTests();
   return created.attempt_id;

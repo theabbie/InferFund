@@ -55,6 +55,7 @@ function serviceContext(): ServiceContext {
     maxAttemptBytes: config.INFERFUND_MAX_ATTEMPT_BYTES,
     maxFilesPerAttempt: config.INFERFUND_MAX_FILES_PER_ATTEMPT,
     writesEnabled: config.writesEnabled,
+    serviceCanWrite: config.serviceCanWrite,
   };
 }
 

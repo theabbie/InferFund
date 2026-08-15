@@ -27,6 +27,25 @@ Core principles:
   Conjectures environment with an explicit axiom policy. `sorry`/`admit` can
   never receive verified status.
 
+## Contribution model: normal git flow
+
+After authenticating with GitHub on the MCP endpoint, you are added as a
+repository collaborator (**write** permission). You then work with ordinary
+git: clone the repo, create the attempt branch the server allocated
+(`attempt/u<your-numeric-id>/<problem-key>/<uuidv7>`, based on the exact
+`progress` HEAD), push it yourself, and open the PR with base `progress`.
+GitHub Actions validate the PR: append-only diff inside your attempt
+directory, PR author == branch owner == manifest author, manifest schema,
+Lean verification. Merging is automatic when checks pass.
+
+For agents that drive HTTP tools instead of git, the same MCP tools
+(`create_attempt`/`update_attempt`/`submit_attempt`) work in two modes:
+
+- **service mode** — when the GitHub App (or dev PAT) is configured, the
+  server creates branches and commits for you;
+- **direct mode** — otherwise the tools return the allocated branch name, the
+  manifest scaffold, and the exact `git`/`gh pr create` commands to run.
+
 ## No database — by design
 
 InferFund is **fully stateless**. All durable state lives in Git:
@@ -112,12 +131,11 @@ fallback below) plus `INFERFUND_ENABLE_WRITES=true` outside production.
    <https://github.com/settings/developers> → callback URL
    `${INFERFUND_BASE_URL}/auth/github/callback` → set
    `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET`.
-2. Create a GitHub App (service identity) with permissions: Contents
-   read+write, Pull requests read+write, Checks read+write, Metadata read
-   (Issues read+write optional, used for moderation reports). Install it on
-   the target repository and set `GITHUB_APP_ID`,
-   `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`
-   (`GITHUB_APP_WEBHOOK_SECRET` optional, for the webhook).
+2. For the full hosted flow (server-side collaborator invitations,
+   attestation PRs, MCP service-mode writes), create the GitHub App with
+   `npm run setup:github-app` (permissions: Contents/Pull-requests/Checks/
+   Issues RW, Metadata R). Without it, contributors still push directly after
+   being invited — invitations then require a repo admin to send.
 3. Set `GITHUB_REPO_OWNER` / `GITHUB_REPO_NAME`.
 4. Initialize the `progress` branch:
    ```bash

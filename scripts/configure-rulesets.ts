@@ -48,6 +48,7 @@ function desiredRulesets(): Ruleset[] {
       : []),
     { actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" },
   ];
+  void appBypass;
   return [
     {
       name: "inferfund-main",
@@ -100,12 +101,25 @@ function desiredRulesets(): Ruleset[] {
           exclude: [],
         },
       },
-      rules: [
-        { type: "creation" },
-        { type: "update" },
-        { type: "deletion" },
-        { type: "non_fast_forward" },
-      ],
+      rules: [{ type: "deletion" }, { type: "non_fast_forward" }],
+      bypass_actors: [],
+    },
+    {
+      name: "inferfund-branch-namespace",
+      target: "branch",
+      enforcement: "active",
+      conditions: {
+        ref_name: {
+          include: ["~ALL"],
+          exclude: [
+            "refs/heads/attempt/**",
+            "refs/heads/attestation/**",
+            "refs/heads/main",
+            "refs/heads/progress",
+          ],
+        },
+      },
+      rules: [{ type: "creation" }],
       bypass_actors: appBypass,
     },
   ];

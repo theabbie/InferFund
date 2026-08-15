@@ -48,6 +48,7 @@ async function mergedAttempt(
   const submitted = await submitAttempt(h.ctx, actor, {
     attemptId: created.attempt_id,
   });
+  if (submitted.pr_number === undefined) throw new Error("expected pr");
   h.github.mergePr(submitted.pr_number);
   clearFrontierCacheForTests();
   clearAttestationCacheForTests();

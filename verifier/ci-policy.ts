@@ -34,6 +34,8 @@ async function main(): Promise<void> {
   const headSha = process.env.HEAD_SHA ?? "";
   const baseBranch = process.env.BASE_BRANCH ?? "";
   const baseSha = process.env.BASE_SHA ?? "";
+  const prAuthorId = Number(process.env.PR_AUTHOR_ID ?? "0");
+  const prAuthorIsBot = process.env.PR_AUTHOR_TYPE === "Bot";
 
   const filesRaw = ghJson<
     Array<{
@@ -155,6 +157,8 @@ async function main(): Promise<void> {
         ? (JSON.parse(manifestContent) as { base_progress_sha?: string })
             .base_progress_sha ?? ""
         : "",
+    prAuthorGithubId: prAuthorId,
+    prAuthorIsBot: prAuthorIsBot,
     maxFilesPerAttempt: 20,
     maxAttemptBytes: 1024 * 1024,
     knownParentAttemptIds: knownParentIds,

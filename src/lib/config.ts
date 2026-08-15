@@ -55,6 +55,8 @@ export type AppConfig = z.infer<typeof envSchema> & {
   isProduction: boolean;
   writesEnabled: boolean;
   adminGithubIds: ReadonlySet<number>;
+  githubWriteConfigured: boolean;
+  serviceCanWrite: boolean;
 };
 
 let cached: AppConfig | undefined;
@@ -91,7 +93,20 @@ export function getConfig(): AppConfig {
         return n;
       }),
   );
-  cached = { ...env, isProduction, writesEnabled, adminGithubIds };
+  const githubWriteConfigured = Boolean(
+    (env.GITHUB_APP_ID &&
+      env.GITHUB_APP_INSTALLATION_ID &&
+      env.GITHUB_APP_PRIVATE_KEY) ||
+      env.GITHUB_DEV_ADMIN_TOKEN,
+  );
+  cached = {
+    ...env,
+    isProduction,
+    writesEnabled,
+    adminGithubIds,
+    githubWriteConfigured,
+    serviceCanWrite: writesEnabled && githubWriteConfigured,
+  };
   return cached;
 }
 
