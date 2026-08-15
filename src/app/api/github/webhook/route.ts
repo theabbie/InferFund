@@ -69,9 +69,10 @@ export async function POST(req: Request): Promise<Response> {
         (c) => c.name === "inferfund-verification",
       );
       const policy = checks.find((c) => c.name === "inferfund-policy");
+      const leanJob = checks.find((c) => c.name === "lean-execution");
       const leanVerified =
         verification?.conclusion === "success" &&
-        checks.some((c) => c.name === "lean-execution");
+        leanJob?.conclusion === "success";
       try {
         await createAttestationPr(github, config.INFERFUND_PROGRESS_BRANCH, {
           type: leanVerified ? "lean_verified" : "structurally_valid",
