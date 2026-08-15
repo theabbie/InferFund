@@ -16,7 +16,7 @@ interface AppCredentials {
   html_url: string;
 }
 
-function manifest(state: string): Record<string, unknown> {
+function manifest(): Record<string, unknown> {
   return {
     name: `inferfund-${process.env.GITHUB_REPO_NAME ?? "app"}`.toLowerCase().slice(0, 32),
     url: BASE_URL,
@@ -42,7 +42,6 @@ function manifest(state: string): Record<string, unknown> {
       metadata: "read",
     },
     default_events: ["pull_request"],
-    state,
   };
 }
 
@@ -84,7 +83,7 @@ function upsertEnv(entries: Record<string, string>): void {
 
 async function main(): Promise<void> {
   const state = randomBytes(16).toString("hex");
-  const manifestJson = JSON.stringify(manifest(state));
+  const manifestJson = JSON.stringify(manifest());
   let installationId: string | null = null;
 
   const credentialsPromise = new Promise<AppCredentials>((resolve, reject) => {
