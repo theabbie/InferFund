@@ -314,10 +314,14 @@ async function verifyToken(
   } as AuthInfo;
 }
 
+const resourceOrigin = process.env.INFERFUND_MCP_RESOURCE_URL
+  ? new URL(process.env.INFERFUND_MCP_RESOURCE_URL).origin
+  : undefined;
+
 export const mcpHandler = withMcpAuth(baseHandler, verifyToken, {
   required: true,
   resourceMetadataPath: "/.well-known/oauth-protected-resource",
-  resourceUrl: process.env.INFERFUND_MCP_RESOURCE_URL,
+  resourceUrl: resourceOrigin,
 });
 
 export { SCOPES };
