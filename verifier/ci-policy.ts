@@ -182,6 +182,29 @@ async function main(): Promise<void> {
     result.ok = false;
   }
 
+  if (!isAttestation && result.manifest) {
+    try {
+      const baseShaFromManifest = result.manifest.base_progress_sha;
+      const compare = ghJson<{ merge_base_commit: { sha: string } }>([
+        "api",
+        `repos/${repo}/compare/${baseShaFromManifest}...${headSha}`,
+      ]);
+      if (compare.merge_base_commit.sha !== baseShaFromManifest) {
+        result.violations.push(
+          `Recorded base_progress_sha ${baseShaFromManifest.slice(0, 10)} is not ` +
+            `the merge base of the PR head — the branch was not cut from that ` +
+            `progress commit. Rebase onto progress or recreate the attempt.`,
+        );
+        result.ok = false;
+      }
+    } catch {
+      result.violations.push(
+        "Could not verify the branch merge-base against progress.",
+      );
+      result.ok = false;
+    }
+  }
+
   setOutput("policy_ok", String(result.ok));
   setOutput("has_lean", String(result.hasLean));
   setOutput("attempt_dir", result.attemptDir ?? "");
