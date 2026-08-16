@@ -429,7 +429,14 @@ export class OctokitGitHubService implements GitHubService {
 
   async ensureCollaborator(githubLogin: string): Promise<CollaboratorStatus> {
     const existing = await this.getCollaboratorStatus(githubLogin);
-    if (existing.status !== "none") return existing;
+    if (
+      existing.status === "active" &&
+      (existing.permission === "write" ||
+        existing.permission === "maintain" ||
+        existing.permission === "admin")
+    ) {
+      return existing;
+    }
     const octokit = await this.client();
     return this.wrap("ensureCollaborator", async () => {
       try {
@@ -446,7 +453,7 @@ export class OctokitGitHubService implements GitHubService {
             invitationId: Number(res.data.id),
           };
         }
-        return { status: "active" as const, permission: "triage" };
+        return { status: "active" as const, permission: "write" };
       } catch (error) {
         if (isOctokitRequestError(error) && error.status === 404) {
           return { status: "none" as const };
