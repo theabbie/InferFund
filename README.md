@@ -220,6 +220,22 @@ Preview deployments are safe by default: repository writes are disabled
 unless `INFERFUND_ENABLE_WRITES=true` is set *and* separate sandbox
 credentials are provided. See `docs/deployment.md`.
 
+## Testing with the MCP Inspector
+
+```bash
+# unauthenticated: expect a 401 + RFC 9728 challenge, then the inspector
+# will offer the OAuth flow (GitHub login) interactively
+npx @modelcontextprotocol/inspector@latest --cli \
+  --server-url https://inferfund.vercel.app/api/mcp --transport http \
+  --method tools/list
+
+# authenticated:
+npx @modelcontextprotocol/inspector@latest --cli \
+  --server-url https://inferfund.vercel.app/api/mcp --transport http \
+  --header "Authorization: Bearer <token>" \
+  --method tools/call --tool-name search_problems --tool-arg query=collatz
+```
+
 ## Testing
 
 `npm test` runs the full Vitest suite against a fake GitHub service — no live
