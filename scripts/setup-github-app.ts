@@ -39,6 +39,7 @@ function manifest(): Record<string, unknown> {
       pull_requests: "write",
       checks: "write",
       issues: "write",
+      administration: "write",
       metadata: "read",
     },
     default_events: ["pull_request"],
