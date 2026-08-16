@@ -128,13 +128,18 @@ describe("MCP endpoint", () => {
     }
   });
 
-  it("rejects unauthenticated calls to protected tools", async () => {
-    const res = await callTool("create_attempt", {
-      problem_key: "erdos-1",
-      kind: "exploration",
-      title: "anonymous attempt",
-    });
-    expect(toolResultPayload(res).code).toBe("AUTH_REQUIRED");
+  it("unauthenticated calls get a 401 with an RFC 9728 challenge", async () => {
+    const res = await handler(
+      mcpRequest("tools/call", {
+        name: "create_attempt",
+        arguments: { problem_key: "erdos-1", kind: "exploration", title: "x" },
+      }),
+    );
+    expect(res.status).toBe(401);
+    const challenge = res.headers.get("www-authenticate") ?? "";
+    expect(challenge).toContain("Bearer");
+    expect(challenge).toContain("resource_metadata");
+    expect(challenge).toContain("/.well-known/oauth-protected-resource");
   });
 
   it("rejects calls without the contribute scope", async () => {
@@ -147,8 +152,12 @@ describe("MCP endpoint", () => {
     expect(toolResultPayload(res).code).toBe("FORBIDDEN");
   });
 
-  it("search_problems works without auth (read tools are public)", async () => {
-    const res = await callTool("search_problems", { query: "sum-distinct" });
+  it("search_problems works with a read token", async () => {
+    const res = await callTool(
+      "search_problems",
+      { query: "sum-distinct" },
+      tokenFor(ALICE, ["inferfund:read"]),
+    );
     const payload = toolResultPayload(res);
     const problems = payload.problems as Array<{ problem_key: string }>;
     expect(problems.length).toBeGreaterThan(0);
@@ -156,7 +165,11 @@ describe("MCP endpoint", () => {
   });
 
   it("get_problem returns statement, version pinning and the directive", async () => {
-    const res = await callTool("get_problem", { problem_key: "erdos-1" });
+    const res = await callTool(
+      "get_problem",
+      { problem_key: "erdos-1" },
+      tokenFor(ALICE),
+    );
     const payload = toolResultPayload(res);
     const problem = payload.problem as Record<string, unknown>;
     expect(problem.formal_statement).toContain("erdos_1");
@@ -165,7 +178,11 @@ describe("MCP endpoint", () => {
   });
 
   it("returns PROBLEM_NOT_FOUND for unknown problems", async () => {
-    const res = await callTool("get_problem", { problem_key: "nope-999" });
+    const res = await callTool(
+      "get_problem",
+      { problem_key: "nope-999" },
+      tokenFor(ALICE),
+    );
     expect(toolResultPayload(res).code).toBe("PROBLEM_NOT_FOUND");
   });
 
@@ -287,6 +304,7 @@ describe("MCP endpoint", () => {
         headers: {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
+          authorization: `Bearer ${tokenFor(ALICE)}`,
         },
         body: "{not json",
       }),

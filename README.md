@@ -118,10 +118,10 @@ npm run dev                   # http://localhost:3000  (MCP at /api/mcp)
 
 Generate the two secrets with `openssl rand -base64 48`.
 
-For read-only local development (search/get/frontier tools, problem catalog,
-health endpoint, OAuth metadata), set only the base URL and secrets; reads hit
-the GitHub API unauthenticated (rate-limited) or via `GITHUB_DEV_ADMIN_TOKEN`
-for higher limits. Write tools (`create_attempt`, `update_attempt`,
+All MCP calls require a bearer token (unauthenticated requests receive a
+`401` with an RFC 9728 `WWW-Authenticate` challenge, which is how MCP clients
+discover the OAuth flow). Local read-only testing can use a token minted in
+the test harness or the OAuth flow with your OAuth App credentials. Write tools (`create_attempt`, `update_attempt`,
 `submit_attempt`, `review_attempt`) require a GitHub App (or the dev PAT
 fallback below) plus `INFERFUND_ENABLE_WRITES=true` outside production.
 

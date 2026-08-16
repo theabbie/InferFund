@@ -315,7 +315,7 @@ async function verifyToken(
 }
 
 export const mcpHandler = withMcpAuth(baseHandler, verifyToken, {
-  required: false,
+  required: true,
   resourceMetadataPath: "/.well-known/oauth-protected-resource",
   resourceUrl: process.env.INFERFUND_MCP_RESOURCE_URL,
 });
